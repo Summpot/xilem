@@ -5,7 +5,11 @@ use std::sync::Arc;
 
 use masonry_core::app::{RenderRootOptions, WindowSizePolicy};
 use masonry_core::core::DefaultProperties;
-use masonry_core::vello::{Error, wgpu};
+use masonry_core::kurbo::Affine;
+use masonry_core::peniko::Color;
+use masonry_core::vello::{
+    wgpu, AaConfig, AaSupport, Error, RenderParams, Renderer, RendererOptions, Scene,
+};
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::window::Window as WinitWindow;
 
@@ -123,5 +127,102 @@ impl ExternalWindowSurface {
         }
 
         metrics
+    }
+
+    /// Render a Masonry/Vello scene and present it to the attached window surface.
+    pub fn render_scene(
+        &mut self,
+        renderer: &mut Option<Renderer>,
+        scene: Scene,
+        logical_width: u32,
+        logical_height: u32,
+        base_color: Color,
+    ) {
+        let transformed_scene = if self.scale_factor == 1.0 {
+            None
+        } else {
+            let mut scaled = Scene::new();
+            scaled.append(&scene, Some(Affine::scale(self.scale_factor)));
+            Some(scaled)
+        };
+        let scene_ref = transformed_scene.as_ref().unwrap_or(&scene);
+
+        let dev_id = self.surface.dev_id;
+        let device = &self.render_cx.devices[dev_id].device;
+        let queue = &self.render_cx.devices[dev_id].queue;
+
+        let renderer = renderer.get_or_insert_with(|| {
+            Renderer::new(
+                device,
+                RendererOptions {
+                    antialiasing_support: AaSupport::area_only(),
+                    ..Default::default()
+                },
+            )
+            .expect("failed to create Vello renderer")
+        });
+
+        let render_params = RenderParams {
+            base_color,
+            width: logical_width.max(1),
+            height: logical_height.max(1),
+            antialiasing_method: AaConfig::Area,
+        };
+
+        let surface_texture = match self.surface.surface.get_current_texture() {
+            Ok(texture) => texture,
+            Err(wgpu::SurfaceError::Outdated) => {
+                let size = self.window.inner_size();
+                self.render_cx.resize_surface(
+                    &mut self.surface,
+                    size.width.max(1),
+                    size.height.max(1),
+                );
+
+                match self.surface.surface.get_current_texture() {
+                    Ok(texture) => texture,
+                    Err(err) => {
+                        tracing::error!(
+                            "Couldn't get swap chain texture after configuring. Cause: '{err}'"
+                        );
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::error!("Couldn't get swap chain texture, operation unrecoverable: {err}");
+                return;
+            }
+        };
+
+        if let Err(err) = renderer.render_to_texture(
+            device,
+            queue,
+            scene_ref,
+            &self.surface.target_view,
+            &render_params,
+        ) {
+            tracing::error!("failed to render scene to texture: {err}");
+            return;
+        }
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("External Window Surface Blit"),
+        });
+        self.surface.blitter.copy(
+            device,
+            &mut encoder,
+            &self.surface.target_view,
+            &surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+        );
+        queue.submit([encoder.finish()]);
+        self.window.pre_present_notify();
+        surface_texture.present();
+
+        if let Err(err) = device.poll(wgpu::PollType::wait_indefinitely()) {
+            tracing::error!("error while waiting for GPU completion: {err}");
+        }
     }
 }
