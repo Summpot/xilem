@@ -89,6 +89,7 @@
 mod app_driver;
 mod convert_winit_event;
 mod event_loop_runner;
+mod external_window;
 mod vello_util;
 
 pub use winit;
@@ -99,6 +100,10 @@ pub mod app {
     pub use super::event_loop_runner::{
         EventLoop, EventLoopBuilder, EventLoopProxy, MasonryState, MasonryUserEvent, NewWindow,
         Window, run, run_with,
+    };
+    pub use super::external_window::{
+        ExistingWindowMetrics, ExternalWindowSurface, existing_window_metrics,
+        render_root_options_from_existing_window,
     };
 
     pub(crate) use super::convert_winit_event::{
