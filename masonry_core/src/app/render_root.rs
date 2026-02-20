@@ -584,6 +584,11 @@ impl RenderRoot {
     }
 
     // --- MARK: ACCESS WIDGETS
+    /// Returns the current HiDPI scale factor used by Masonry for physical→logical conversion.
+    pub fn scale_factor(&self) -> f64 {
+        self.global_state.scale_factor
+    }
+
     /// Returns a [`WidgetRef`] to the root widget of the given [layer](crate::doc::masonry_concepts#layers).
     pub fn get_layer_root(&self, layer_idx: usize) -> WidgetRef<'_, dyn Widget> {
         self.get_widget(self.layer_root_id(layer_idx))
