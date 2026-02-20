@@ -47,6 +47,7 @@ mod widget_view;
 
 pub use any_view::AnyWidgetView;
 pub use masonry_root::{InitialRootWidget, MasonryRoot};
+pub use masonry::core::WidgetId;
 pub use pod::Pod;
 pub use view_ctx::ViewCtx;
 pub use widget_view::{WidgetView, WidgetViewSequence};

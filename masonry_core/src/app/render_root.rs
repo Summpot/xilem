@@ -549,6 +549,40 @@ impl RenderRoot {
         self.global_state.cursor_icon
     }
 
+    /// Returns the hit-tested widget path for a physical pointer position.
+    ///
+    /// The returned path is ordered from root to leaf (inclusive).
+    /// If no widget is hit, an empty vector is returned.
+    pub fn get_hit_path(&self, physical_pos: Point) -> Vec<WidgetId> {
+        let target = if let Some(capture_target) = self.global_state.pointer_capture_target
+            && self.widget_arena.has(capture_target)
+        {
+            Some(capture_target)
+        } else {
+            let scale_factor = self.global_state.scale_factor.max(f64::EPSILON);
+            let logical_pos = Point::new(physical_pos.x / scale_factor, physical_pos.y / scale_factor);
+
+            self.get_widget(self.root_id())
+                .expect("root widget not in widget tree")
+                .find_widget_under_pointer(logical_pos)
+                .map(|widget| widget.id())
+        };
+
+        let Some(target) = target else {
+            return Vec::new();
+        };
+
+        let mut path = self
+            .widget_arena
+            .nodes
+            .get_id_path(target)
+            .iter()
+            .map(|&id| WidgetId(id.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        path.reverse();
+        path
+    }
+
     // --- MARK: ACCESS WIDGETS
     /// Returns a [`WidgetRef`] to the root widget of the given [layer](crate::doc::masonry_concepts#layers).
     pub fn get_layer_root(&self, layer_idx: usize) -> WidgetRef<'_, dyn Widget> {
