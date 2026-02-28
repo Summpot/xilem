@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use bevy_window::RawHandleWrapper;
 use masonry_core::app::{RenderRootOptions, WindowSizePolicy};
 use masonry_core::core::DefaultProperties;
 use masonry_core::kurbo::Affine;
@@ -65,7 +66,6 @@ pub fn render_root_options_from_existing_window(
 /// This allows host frameworks (for example Bevy) to keep window/event-loop ownership,
 /// while Masonry/Vello initializes rendering resources against that existing window.
 pub struct ExternalWindowSurface {
-    window: Arc<WinitWindow>,
     render_cx: RenderContext,
     surface: RenderSurface<'static>,
     scale_factor: f64,
@@ -73,27 +73,37 @@ pub struct ExternalWindowSurface {
 
 impl ExternalWindowSurface {
     /// Create an attached Vello surface for an existing window.
-    pub fn new(window: Arc<WinitWindow>, present_mode: wgpu::PresentMode) -> Result<Self, Error> {
+    pub fn new(
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        metrics: ExistingWindowMetrics,
+        present_mode: wgpu::PresentMode,
+    ) -> Result<Self, Error> {
         let mut render_cx = RenderContext::new();
-        let metrics = existing_window_metrics(&window);
         let surface = pollster::block_on(render_cx.create_surface(
-            window.clone(),
+            target,
             metrics.physical_size.width.max(1),
             metrics.physical_size.height.max(1),
             present_mode,
         ))?;
 
         Ok(Self {
-            window,
             render_cx,
             surface,
             scale_factor: metrics.scale_factor,
         })
     }
 
-    /// Access the attached window.
-    pub fn window(&self) -> &Arc<WinitWindow> {
-        &self.window
+    /// Create an attached Vello surface from a Bevy-owned raw-handle wrapper.
+    pub fn new_from_bevy_raw_handle(
+        raw_handle: RawHandleWrapper,
+        metrics: ExistingWindowMetrics,
+        present_mode: wgpu::PresentMode,
+    ) -> Result<Self, Error> {
+        // SAFETY: The caller provides a `RawHandleWrapper` originating from Bevy's
+        // `WindowWrapper`, which internally keeps an owning reference to the window alive.
+        // We create a thread-locked handle target only for surface initialization.
+        let target = unsafe { raw_handle.get_handle() };
+        Self::new(target, metrics, present_mode)
     }
 
     /// Current physical size of the attached surface.
@@ -112,8 +122,7 @@ impl ExternalWindowSurface {
     }
 
     /// Synchronize internal surface size and scale-factor from the attached window.
-    pub fn sync_window_metrics(&mut self) -> ExistingWindowMetrics {
-        let metrics = existing_window_metrics(&self.window);
+    pub fn sync_window_metrics(&mut self, metrics: ExistingWindowMetrics) -> ExistingWindowMetrics {
         self.scale_factor = metrics.scale_factor;
 
         if self.surface.config.width != metrics.physical_size.width
@@ -172,11 +181,12 @@ impl ExternalWindowSurface {
         let surface_texture = match self.surface.surface.get_current_texture() {
             Ok(texture) => texture,
             Err(wgpu::SurfaceError::Outdated) => {
-                let size = self.window.inner_size();
+                let current_width = self.surface.config.width.max(1);
+                let current_height = self.surface.config.height.max(1);
                 self.render_cx.resize_surface(
                     &mut self.surface,
-                    size.width.max(1),
-                    size.height.max(1),
+                    current_width,
+                    current_height,
                 );
 
                 match self.surface.surface.get_current_texture() {
@@ -218,7 +228,6 @@ impl ExternalWindowSurface {
                 .create_view(&wgpu::TextureViewDescriptor::default()),
         );
         queue.submit([encoder.finish()]);
-        self.window.pre_present_notify();
         surface_texture.present();
 
         if let Err(err) = device.poll(wgpu::PollType::wait_indefinitely()) {

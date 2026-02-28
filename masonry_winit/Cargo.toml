@@ -25,6 +25,7 @@ tracy = ["dep:tracing-tracy", "dep:wgpu-profiler", "wgpu-profiler/tracy", "mason
 
 [dependencies]
 masonry_core.workspace = true
+bevy_window = "0.18"
 winit.workspace = true
 tracing = { workspace = true, features = ["default"] }
 tracing-tracy = { version = "0.11.4", optional = true }
@@ -41,5 +42,5 @@ copypasta = "0.10.2"
 # See https://github.com/rust-lang/cargo/issues/4242
 masonry = { path = "../masonry" }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "allow"
