@@ -969,7 +969,18 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
         }
 
         let (fctx, lctx) = ctx.text_contexts();
-        self.editor.layout(fctx, lctx);
+        let layout = self.editor.layout(fctx, lctx);
+
+        let line_count = layout.len();
+        if line_count > 0 {
+            let line_first = layout.get(0).unwrap();
+            let line_last = layout.get(line_count - 1).unwrap();
+            let first_baseline = line_first.metrics().baseline as f64;
+            let last_baseline = line_last.metrics().baseline as f64;
+            ctx.set_baselines(first_baseline, last_baseline);
+        } else {
+            ctx.clear_baselines();
+        }
 
         ctx.set_ime_area(self.ime_area());
     }
@@ -1105,7 +1116,7 @@ mod tests {
     use masonry_testing::TestHarnessParams;
 
     use super::*;
-    use crate::core::{KeyboardEvent, Modifiers, NewWidget, Properties};
+    use crate::core::{KeyboardEvent, Modifiers, NewWidget, PropertySet};
     use crate::kurbo::Size;
     use crate::palette;
     use crate::testing::TestHarness;
@@ -1168,7 +1179,7 @@ mod tests {
         let base_target = {
             let area = NewWidget::new_with_props(
                 TextArea::new_immutable("Test string"),
-                Properties::new().with(ContentColor::new(palette::css::AZURE)),
+                PropertySet::new().with(ContentColor::new(palette::css::AZURE)),
             );
 
             let mut harness = TestHarness::create_with(test_property_set(), area, test_params);
@@ -1179,7 +1190,7 @@ mod tests {
         {
             let area = NewWidget::new_with_props(
                 TextArea::new_immutable("Different string"),
-                Properties::new().with(ContentColor::new(palette::css::AZURE)),
+                PropertySet::new().with(ContentColor::new(palette::css::AZURE)),
             );
 
             let mut harness = TestHarness::create_with(test_property_set(), area, test_params);

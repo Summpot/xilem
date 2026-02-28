@@ -4,6 +4,8 @@
 //! Common widgets.
 
 mod align;
+mod badge;
+mod badged;
 mod button;
 mod canvas;
 mod checkbox;
@@ -21,10 +23,13 @@ mod progress_bar;
 mod prose;
 mod resize_observer;
 mod scroll_bar;
+mod selector;
+mod selector_item;
 mod sized_box;
 mod slider;
 mod spinner;
 mod split;
+mod step_input;
 mod switch;
 mod text_area;
 mod text_input;
@@ -36,6 +41,8 @@ mod zstack;
 // (e.g. actions, param types)
 
 pub use self::align::*;
+pub use self::badge::*;
+pub use self::badged::*;
 pub use self::button::*;
 pub use self::canvas::*;
 pub use self::checkbox::*;
@@ -53,10 +60,13 @@ pub use self::progress_bar::*;
 pub use self::prose::*;
 pub use self::resize_observer::*;
 pub use self::scroll_bar::*;
+pub use self::selector::*;
+pub use self::selector_item::*;
 pub use self::sized_box::*;
 pub use self::slider::*;
 pub use self::spinner::*;
 pub use self::split::*;
+pub use self::step_input::*;
 pub use self::switch::*;
 pub use self::text_area::*;
 pub use self::text_input::*;
