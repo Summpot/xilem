@@ -274,6 +274,12 @@ impl Default for TestHarnessParams {
     }
 }
 
+/// Roboto is our current test font.
+pub const ROBOTO: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/resources/fonts/roboto/Roboto-Regular.ttf"
+));
+
 impl<W: Widget> TestHarness<W> {
     // -- MARK: CREATE
     /// Builds harness with given root widget.
@@ -324,10 +330,6 @@ impl<W: Widget> TestHarness<W> {
         // harnesses.
         let _ = try_init_test_tracing();
 
-        const ROBOTO: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/resources/fonts/roboto/Roboto-Regular.ttf"
-        ));
         let data = Blob::new(Arc::new(ROBOTO));
 
         let (signal_sender, signal_receiver) = mpsc::channel::<RenderRootSignal>();
@@ -487,7 +489,8 @@ impl<W: Widget> TestHarness<W> {
     // TODO: There are some users of this function which just use it assert that `paint`/`compose` doesn't crash.
     // Those could avoid actually performing a real render.
     pub fn render(&mut self) -> RgbaImage {
-        let (contents_scene, tree_update) = self.render_root.redraw();
+        let (paint_result, tree_update) = self.render_root.redraw();
+        let contents_scene = paint_result.composite();
         let tree_update = tree_update.unwrap();
         self.access_tree
             .update_and_process_changes(tree_update, &mut NoOpTreeChangeHandler);

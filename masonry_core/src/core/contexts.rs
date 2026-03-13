@@ -23,7 +23,7 @@ use crate::kurbo::{Affine, Axis, Insets, Point, Rect, Size, Vec2};
 use crate::layout::{LayoutSize, LenDef, SizeDef};
 use crate::passes::layout::{place_widget, resolve_length, resolve_size, run_layout_on};
 use crate::peniko::Color;
-use crate::util::{TypeSet, get_debug_color};
+use crate::util::{ParentLinkedList, TypeSet, get_debug_color};
 
 // Note - Most methods defined in this file revolve around `WidgetState` fields.
 // Consider reading `WidgetState` documentation (especially the documented naming scheme)
@@ -105,6 +105,7 @@ pub struct UpdateCtx<'a> {
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
     pub(crate) default_properties: &'a DefaultProperties,
+    pub(crate) ancestors: Option<&'a ParentLinkedList<'a>>,
 }
 
 /// A context provided to [`Widget::measure`] methods.
@@ -261,7 +262,7 @@ impl MutateCtx<'_> {
             parent_widget_state: Some(&mut self.widget_state),
             widget_state: &mut node_mut.item.state,
             properties: PropertiesMut {
-                map: &mut node_mut.item.properties,
+                set: &mut node_mut.item.properties,
                 default_map: self.properties.default_map,
             },
             changed_properties: &mut node_mut.item.changed_properties,
@@ -295,6 +296,7 @@ impl MutateCtx<'_> {
             widget_state: self.widget_state,
             children: self.children.reborrow_mut(),
             default_properties: self.default_properties,
+            ancestors: None,
         }
     }
 
@@ -323,7 +325,7 @@ impl<'w> QueryCtx<'w> {
             global_state: self.global_state,
             widget_state: &child_node.item.state,
             properties: PropertiesRef {
-                map: &child_node.item.properties,
+                set: &child_node.item.properties,
                 default_map: self.properties.default_map,
             },
             children: child_node.children,
@@ -1728,12 +1730,13 @@ impl_context_method!(
         /// The callbacks will be run in the order they were submitted during the mutate pass.
         pub fn mutate_later(
             &mut self,
+            // TODO - Use WidgetTag instead?
             target: WidgetId,
             f: impl FnOnce(WidgetMut<'_, dyn Widget>) + Send + 'static,
         ) {
             let callback = MutateCallback {
                 id: target,
-                callback: Box::new(|mut widget_mut| f(widget_mut.downcast())),
+                callback: Box::new(f),
             };
             self.global_state.mutate_callbacks.push(callback);
         }
@@ -2033,6 +2036,24 @@ impl_context_method!(
     }
 );
 
+impl UpdateCtx<'_> {
+    /// Returns the nearest ancestor of this widget that is of type `W`, along with its `WidgetId`.
+    ///
+    /// This should only be called during [`WidgetAdded`](crate::core::Update::WidgetAdded).
+    /// Calling it in other contexts will always return `None`.
+    // FIXME: We should move this method out of `UpdateCtx` to avoid having this disclaimer.
+    pub fn nearest_ancestor<W: Widget>(&self) -> Option<(&W, WidgetId)> {
+        let mut list = self.ancestors;
+        while let Some(node) = list {
+            if let Some(widget) = W::from_dyn(node.widget) {
+                return Some((widget, node.id));
+            }
+            list = node.parent;
+        }
+        None
+    }
+}
+
 impl RegisterCtx<'_> {
     /// Registers a child widget.
     ///
@@ -2081,7 +2102,7 @@ impl RegisterCtx<'_> {
         let node = WidgetArenaNode {
             widget: widget.as_box_dyn(),
             state,
-            properties: properties.map,
+            properties,
             changed_properties: TypeSet::default(),
         };
         self.children.insert(id, node);
