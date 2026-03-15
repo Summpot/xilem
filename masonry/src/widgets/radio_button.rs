@@ -216,6 +216,13 @@ impl Widget for RadioButton {
                 };
 
                 self.parent_group = Some(id);
+                if self.selected {
+                    let self_id = ctx.widget_id();
+                    ctx.mutate_later(id, move |mut group| {
+                        let group = group.downcast::<RadioGroup>();
+                        Self::update_group(group, self_id, true);
+                    });
+                }
             }
             Update::HoveredChanged(_)
             | Update::ActiveChanged(_)
@@ -548,5 +555,24 @@ mod tests {
 
         // We don't use assert_eq because we don't want rich assert
         assert!(image_1 == image_2);
+    }
+
+    #[test]
+    fn initially_checked_button_is_cleared_when_selecting_another() {
+        let first_tag = WidgetTag::<RadioButton>::unique();
+        let second_tag = WidgetTag::<RadioButton>::unique();
+        let first = NewWidget::new_with_tag(RadioButton::new(true, "One"), first_tag);
+        let second = NewWidget::new_with_tag(RadioButton::new(false, "Two"), second_tag);
+        let column = NewWidget::new(Flex::column().with_fixed(first).with_fixed(second));
+        let group = NewWidget::new(RadioGroup::new(column));
+
+        let mut harness =
+            TestHarness::create_with_size(default_property_set(), group, Size::new(120.0, 80.0));
+
+        let second_id = harness.get_widget(second_tag).id();
+        harness.mouse_click_on(second_id);
+
+        assert!(!harness.get_widget(first_tag).inner().selected);
+        assert!(harness.get_widget(second_tag).inner().selected);
     }
 }
