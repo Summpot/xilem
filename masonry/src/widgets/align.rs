@@ -9,15 +9,15 @@
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ChildrenIds, LayoutCtx, NewWidget, NoAction, PaintCtx, PropertiesRef, RegisterCtx,
     Widget, WidgetId, WidgetPod,
 };
 use crate::core::{MeasureCtx, WidgetMut};
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Rect, Size};
-use crate::layout::{LayoutSize, LenReq, SizeDef, UnitPoint};
+use crate::layout::{AsUnit, LayoutSize, LenReq, Length, SizeDef, UnitPoint};
 
 // TODO - Have child widget type as generic argument
 
@@ -125,8 +125,8 @@ impl Widget for Align {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -152,7 +152,7 @@ impl Widget for Align {
             Axis::Horizontal => self.width_factor,
             Axis::Vertical => self.height_factor,
         } {
-            length = child_length * factor;
+            length = (child_length.get() * factor).px();
         }
 
         // Never return a length larger than the bounds
@@ -177,7 +177,13 @@ impl Widget for Align {
         ctx.derive_baselines(&self.child);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -204,7 +210,7 @@ impl Widget for Align {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{WidgetOptions, WidgetTag};
+    use crate::core::WidgetTag;
     use crate::layout::AsUnit;
     use crate::palette;
     use crate::peniko::color::AlphaColor;
@@ -215,7 +221,7 @@ mod tests {
 
     #[test]
     fn centered() {
-        let widget = Align::centered(Label::new("hello").with_auto_id()).with_auto_id();
+        let widget = Align::centered(Label::new("hello").prepare()).prepare();
 
         let mut harness = TestHarness::create(test_property_set(), widget);
 
@@ -224,7 +230,7 @@ mod tests {
 
     #[test]
     fn right() {
-        let widget = Align::right(Label::new("hello").with_auto_id()).with_auto_id();
+        let widget = Align::right(Label::new("hello").prepare()).prepare();
 
         let mut harness = TestHarness::create(test_property_set(), widget);
 
@@ -233,7 +239,7 @@ mod tests {
 
     #[test]
     fn left() {
-        let widget = Align::left(Label::new("hello").with_auto_id()).with_auto_id();
+        let widget = Align::left(Label::new("hello").prepare()).prepare();
 
         let mut harness = TestHarness::create(test_property_set(), widget);
 
@@ -244,24 +250,20 @@ mod tests {
     fn oversized() {
         let align_tag = WidgetTag::unique();
 
-        let child = SizedBox::empty().with_props((
+        let child = SizedBox::empty().prepare().with_props((
             Dimensions::fixed(100.px(), 100.px()),
             Background::Color(AlphaColor::from_rgba8(127, 0, 0, 127)),
         ));
-        let align = NewWidget::new_with(
-            Align::new(UnitPoint::CENTER, child),
-            Some(align_tag),
-            WidgetOptions::default(),
-            (
+        let align = NewWidget::new(Align::new(UnitPoint::CENTER, child))
+            .with_tag(align_tag)
+            .with_props((
                 Dimensions::fixed(50.px(), 50.px()),
-                BorderWidth::all(2.),
+                BorderWidth::all(2.px()),
                 BorderColor::new(palette::css::BLACK),
-            ),
-        );
-        let root = Align::centered(align).with_auto_id();
+            ));
+        let root = Align::centered(align).prepare();
 
-        let window_size = Size::new(200.0, 200.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), root, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (200, 200));
 
         assert_render_snapshot!(harness, "align_oversized_center");
 

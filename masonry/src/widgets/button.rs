@@ -7,7 +7,6 @@ use std::sync::Arc;
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace, trace_span};
-use vello::Scene;
 
 use crate::core::MeasureCtx;
 use crate::core::keyboard::{Key, NamedKey};
@@ -17,8 +16,9 @@ use crate::core::{
     PointerButtonEvent, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update,
     UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Size};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
 use crate::theme;
 use crate::widgets::Label;
 
@@ -48,7 +48,7 @@ impl Button {
     /// use masonry::widgets::{Button, Label};
     /// use masonry::core::Widget;
     ///
-    /// let button = Button::new(Label::new("Increment").with_auto_id());
+    /// let button = Button::new(Label::new("Increment").prepare());
     /// ```
     pub fn new(child: NewWidget<impl Widget + ?Sized>) -> Self {
         Self {
@@ -67,7 +67,7 @@ impl Button {
     /// let button = Button::with_text("Increment");
     /// ```
     pub fn with_text(text: impl Into<Arc<str>>) -> Self {
-        Self::new(Label::new(text).with_auto_id())
+        Self::new(Label::new(text).prepare())
     }
 }
 
@@ -133,12 +133,12 @@ impl Widget for Button {
         event: &TextEvent,
     ) {
         match event {
-            TextEvent::Keyboard(event) if event.state.is_up() => {
-                if matches!(&event.key, Key::Character(c) if c == " ")
-                    || event.key == Key::Named(NamedKey::Enter)
-                {
-                    ctx.submit_action::<Self::Action>(ButtonPress { button: None });
-                }
+            TextEvent::Keyboard(event)
+                if event.state.is_up()
+                    && (matches!(&event.key, Key::Character(c) if c == " ")
+                        || event.key == Key::Named(NamedKey::Enter)) =>
+            {
+                ctx.submit_action::<Self::Action>(ButtonPress { button: None });
             }
             _ => (),
         }
@@ -178,12 +178,8 @@ impl Widget for Button {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -202,7 +198,7 @@ impl Widget for Button {
         // we make sure we will have at least the same height as the default text input.
         match axis {
             Axis::Horizontal => length,
-            Axis::Vertical => length.max(theme::BASIC_WIDGET_HEIGHT.dp(scale)),
+            Axis::Vertical => length.max(theme::BASIC_WIDGET_HEIGHT),
         }
     }
 
@@ -216,7 +212,13 @@ impl Widget for Button {
         ctx.derive_baselines(&self.child);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::Button
@@ -257,6 +259,8 @@ impl Widget for Button {
 // --- MARK: TESTS
 #[cfg(test)]
 mod tests {
+    use assert_matches::assert_matches;
+    use masonry_core::core::WidgetTag;
     use masonry_testing::{TestHarnessParams, assert_failing_render_snapshot};
 
     use super::*;
@@ -273,10 +277,8 @@ mod tests {
     fn simple_button() {
         let widget = NewWidget::new(Button::with_text("Hello"));
 
-        let window_size = Size::new(100.0, 40.0);
-        let mut params = TestHarnessParams::DEFAULT;
-        params.window_size = window_size;
-        params.root_padding = TestHarnessParams::ROOT_PADDING;
+        let params =
+            TestHarnessParams::size_and_padding((100, 40), TestHarnessParams::ROOT_PADDING);
         let mut harness = TestHarness::create_with(test_property_set(), widget, params);
         let button_id = harness.root_id();
 
@@ -284,7 +286,7 @@ mod tests {
 
         assert!(harness.pop_action_erased().is_none());
 
-        harness.mouse_click_on(button_id);
+        harness.mouse_click_on(button_id, Some(PointerButton::Primary));
         assert_eq!(
             harness.pop_action::<ButtonPress>(),
             Some((
@@ -316,7 +318,7 @@ mod tests {
 
         harness.focus_on(None);
         harness.mouse_move_to(button_id);
-        harness.mouse_button_press(PointerButton::Primary);
+        harness.mouse_button_press(None);
 
         assert_eq!(harness.focused_widget_id(), Some(button_id));
     }
@@ -326,15 +328,12 @@ mod tests {
         let image_1 = {
             let label = Label::new("The quick brown fox jumps over the lazy dog")
                 .with_style(StyleProperty::FontSize(20.0));
-            let label = NewWidget::new_with_props(
-                label,
-                PropertySet::new().with(ContentColor::new(ACCENT_COLOR)),
-            );
+            let label = NewWidget::new(label)
+                .with_props(PropertySet::new().with(ContentColor::new(ACCENT_COLOR)));
 
             let button = NewWidget::new(Button::new(label));
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), button, Size::new(50.0, 50.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), button, (50, 50));
 
             harness.render()
         };
@@ -342,8 +341,7 @@ mod tests {
         let image_2 = {
             let button = NewWidget::new(Button::with_text("Hello world"));
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), button, Size::new(50.0, 50.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), button, (50, 50));
 
             harness.edit_root_widget(|mut button| {
                 let mut label = Button::child_mut(&mut button);
@@ -367,14 +365,13 @@ mod tests {
         let red = crate::palette::css::RED;
         let button = NewWidget::new(Button::with_text("Some random text"));
 
-        let window_size = Size::new(200.0, 80.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), button, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), button, (200, 80));
 
         harness.edit_root_widget(|mut button| {
             button.insert_prop(BorderColor { color: red });
-            button.insert_prop(BorderWidth { width: 5.0 });
-            button.insert_prop(CornerRadius { radius: 20.0 });
-            button.insert_prop(Padding::from_vh(3., 8.));
+            button.insert_prop(BorderWidth { width: 5.px() });
+            button.insert_prop(CornerRadius { radius: 20.px() });
+            button.insert_prop(Padding::from_vh(3.px(), 8.px()));
 
             let mut label = Button::child_mut(&mut button);
             label.insert_prop(ContentColor::new(red));
@@ -389,30 +386,30 @@ mod tests {
 
         let grid = Grid::with_dimensions(2, 2)
             .with(
-                Button::with_text("A").with_auto_id(),
+                Button::with_text("A").prepare(),
                 GridParams::new(0, 0, 1, 1),
             )
             .with(
-                Button::with_text("B").with_auto_id(),
+                Button::with_text("B").prepare(),
                 GridParams::new(1, 0, 1, 1),
             )
             .with(
-                Button::with_text("C").with_auto_id(),
+                Button::with_text("C").prepare(),
                 GridParams::new(0, 1, 1, 1),
             )
             .with(
-                Button::with_text("D").with_auto_id(),
+                Button::with_text("D").prepare(),
                 GridParams::new(1, 1, 1, 1),
             );
-        let root_widget = NewWidget::new_with_props(
-            grid,
+        let root_widget = NewWidget::new(grid).with_props(
             PropertySet::new()
-                .with(Padding::all(20.0))
+                .with(Padding::all(20.px()))
                 .with(Gap::new(40.px())),
         );
 
-        let mut test_params = TestHarnessParams::default();
-        test_params.window_size = Size::new(300.0, 300.0);
+        let mut test_params = TestHarnessParams::default().with_size((300, 300));
+        // TODO - Remove? Not sure screenshot_tolerance is useful anymore.
+        // See https://github.com/linebender/xilem/issues/1759
         test_params.screenshot_tolerance = 32;
         let mut harness = TestHarness::create_with(test_property_set(), root_widget, test_params);
 
@@ -426,19 +423,19 @@ mod tests {
             {
                 let mut button = Grid::get_mut(&mut grid, 1);
                 let mut button = button.downcast::<Button>();
-                button.insert_prop(BoxShadow::new(ORANGE, (-10., 10.)).blur(5.0));
+                button.insert_prop(BoxShadow::new(ORANGE, (-10., 10.)).blur(5.px()));
             }
 
             {
                 let mut button = Grid::get_mut(&mut grid, 2);
                 let mut button = button.downcast::<Button>();
-                button.insert_prop(BoxShadow::new(ORANGE, (-10., -10.)).blur(-5.0));
+                button.insert_prop(BoxShadow::new(ORANGE, (-10., -10.)).blur(0.px()));
             }
 
             {
                 let mut button = Grid::get_mut(&mut grid, 3);
                 let mut button = button.downcast::<Button>();
-                button.insert_prop(BoxShadow::new(ORANGE, (0., 0.)).blur(5.0));
+                button.insert_prop(BoxShadow::new(ORANGE, (0., 0.)).blur(5.px()));
             }
         });
 
@@ -451,7 +448,7 @@ mod tests {
             {
                 let mut button = Grid::get_mut(&mut grid, 1);
                 let mut button = button.downcast::<Button>();
-                button.insert_prop(BoxShadow::new(ORANGE, (-10., 10.)).blur(2.5));
+                button.insert_prop(BoxShadow::new(ORANGE, (-10., 10.)).blur(2.5.px()));
             }
         });
         assert_failing_render_snapshot!(harness, "button_shadows");
@@ -462,8 +459,8 @@ mod tests {
     /// We validate that each of these actually are correctly supported.
     fn validate_noninteractive_child<W: Widget>(child: NewWidget<W>) {
         let child_id = child.id();
-        let mut button = Button::new(child).with_auto_id();
-        button.properties.insert(Padding::all(10.));
+        let mut button = Button::new(child).prepare();
+        button.properties.insert(Padding::all(10.px()));
         let button_id = button.id();
         let mut harness = TestHarness::create(test_property_set(), button);
 
@@ -473,13 +470,13 @@ mod tests {
             button.ctx().is_hovered(),
             "The child shouldn't prevent hover."
         );
-        harness.mouse_button_press(PointerButton::Primary);
+        harness.mouse_button_press(None);
         let button = harness.get_widget_with_id(button_id);
         assert!(
             button.ctx().is_pointer_capture_target(),
             "A non-interactive child shouldn't prevent pointer capture."
         );
-        harness.mouse_button_release(PointerButton::Primary);
+        harness.mouse_button_release(None);
         let (_, event_id) = harness
             .pop_action::<<Button as Widget>::Action>()
             .expect("There should be an action.");
@@ -491,26 +488,43 @@ mod tests {
 
     #[test]
     fn label_child() {
-        let child = Label::new("Some text").with_auto_id();
+        let child = Label::new("Some text").prepare();
         validate_noninteractive_child(child);
     }
 
     #[test]
     fn sized_box_child() {
-        let child = SizedBox::empty()
-            .width(50.px())
-            .height(50.px())
-            .with_auto_id();
+        let child = SizedBox::empty().width(50.px()).height(50.px()).prepare();
         validate_noninteractive_child(child);
     }
 
     #[test]
     fn flex_child() {
         let child = Flex::row()
-            .with_fixed(Label::new("Some text").with_auto_id())
-            .with_auto_id();
+            .with_fixed(Label::new("Some text").prepare())
+            .prepare();
         validate_noninteractive_child(child);
     }
     // We could imagine more involved tests, e.g. a button with an icon
     // or a with a keyboard shortcut indicator.
+
+    #[test]
+    fn textless_button() {
+        let tag = WidgetTag::unique();
+        let button = Button::with_text("").prepare().with_tag(tag);
+        let parent = Flex::row().with(button, 0.).prepare();
+
+        let params =
+            TestHarnessParams::size_and_padding((100, 40), TestHarnessParams::ROOT_PADDING);
+        let mut harness = TestHarness::create_with(test_property_set(), parent, params);
+        let button_id = harness.get_widget(tag).id();
+
+        assert_render_snapshot!(harness, "button_no_text");
+
+        harness.mouse_click_on(button_id, Some(PointerButton::Primary));
+        assert_matches!(
+            harness.pop_action::<ButtonPress>(),
+            Some((ButtonPress { .. }, ..))
+        );
+    }
 }

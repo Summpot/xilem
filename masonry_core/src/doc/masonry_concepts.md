@@ -14,6 +14,14 @@
 
 This section describes concepts mentioned by name elsewhere in the documentation and gives them a semi-formal definition for reference.
 
+## Classes
+
+Widgets can have an arbitrary numbers of text labels called "classes".
+You can think of them as similar to [CSS class attributes](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Global_attributes/class).
+
+Classes are mostly used for [property selection](#properties).
+
+
 ## Widget status
 
 The notion of widget status is somewhat vague, but you can think of it as similar to [CSS pseudo-classes](https://developer.mozilla.org/en-US/docs/Web/CSS/Pseudo-classes).
@@ -150,10 +158,42 @@ What happens if the focus anchor is removed from the tree or stashed/disabled is
 This behavior exists so that when the user clicks somewhere and then presses `Tab`, the focused widget is more likely to be close to whatever the user clicked.
 
 
-## Properties / Props
+## Widget tags
 
-All widgets have associated data of arbitrary types called "properties".
+A [`WidgetTag`] is a unique id that can be associated with a widget.
+Multiple tags can point to the same widget, but a tag can only point to a single widget.
+
+Tags are usually associated to a widget by creating the widget with a copy of the tag, though [`RenderRoot`] can also create a tag dynamically in some cases.
+
+Code that tries to access a specific widget, especially in tests, should use methods that take a [`WidgetTag`] as parameter.
+
+
+## Properties
+
+All widgets have associated data of arbitrary types called "properties" (sometimes called "props" in internal code).
 These properties are mostly used for styling and event handling.
+
+In general, properties represent self-contained data shared between multiple widgets.
+Think "background color", not "textbox contents".
+
+### Properties are low-verification
+
+While it would be tempting to implement some kind of trait-based compile-time verification system to check that the `EverlastingGobstopper` property is only set on widgets that can properly gobstop them, we refrain from implementing such systems in Masonry.
+
+The property system is meant to be flexible, and allows users to set properties on a widget whose writer was not aware of them.
+This is useful for debugging and for writing container widgets.
+
+For external crates that *do* want static verification, we provide the non-binding [`UsesProperty`] trait.
+
+### Property fallback
+
+Widgets have multiple layers of properties:
+
+- First, a set of local properties associated with a specific widget.
+- Then a "property stack" which is made of several layers, where each layer is a set of properties gated by a [`Selector`].
+- Then, default properties associated with each widget type.
+
+When code wants to access a widget's properties, a cascading process goes through these layers in turn and returns the first valid match.
 
 
 ## Box model
@@ -282,4 +322,7 @@ DPI-aware pixel snapping is a future feature.
 [`Widget::accepts_focus`]: crate::core::Widget::accepts_focus
 [`EventCtx::request_focus`]: crate::core::EventCtx::request_focus
 [`Widget::on_pointer_event`]: crate::core::Widget::on_pointer_event
+[`UsesProperty`]: crate::core::UsesProperty
+[`Selector`]: crate::core::Selector
 [`RenderRoot`]: crate::app::RenderRoot
+[`WidgetTag`]: crate::core::WidgetTag

@@ -3,10 +3,12 @@
 
 use std::any::TypeId;
 
+use kurbo::{Affine, Insets, Point, Rect, Size, Vec2};
 use tracing::Span;
-use vello::kurbo::{Affine, Insets, Point, Rect, Size, Vec2};
 
-use crate::core::{WidgetId, WidgetOptions};
+use crate::core::{
+    ClassSetDiff, PaintLayerMode, PropertyCache, PropertyStackId, WidgetId, WidgetOptions,
+};
 use crate::layout::MeasurementCache;
 
 // TODO - Reduce WidgetState size.
@@ -201,6 +203,8 @@ pub(crate) struct WidgetState {
     pub(crate) request_post_paint: bool,
     /// A painting method must be called on this widget or a descendant
     pub(crate) needs_paint: bool,
+    /// How this widget subtree should be represented in the current paint pass.
+    pub(crate) paint_layer_mode: PaintLayerMode,
 
     /// The `accessibility` method must be called on this widget
     pub(crate) request_accessibility: bool,
@@ -221,6 +225,11 @@ pub(crate) struct WidgetState {
     pub(crate) descendant_is_focusable: bool,
     /// A focusable widget was added, removed, stashed, disabled, etc.
     pub(crate) needs_update_focusable: bool,
+
+    /// This widget has pending property changes.
+    pub(crate) request_update_props: bool,
+    /// This widget or a descendant has pending property changes.
+    pub(crate) needs_update_props: bool,
 
     pub(crate) children_changed: bool,
 
@@ -251,6 +260,14 @@ pub(crate) struct WidgetState {
     /// Descendants of the focused widget are not in the focused path.
     pub(crate) has_focus_target: bool,
 
+    // --- PROPERTIES ---
+    /// The `PropertyStack` assigned to this widget, if any.
+    pub(crate) property_stack_id: Option<PropertyStackId>,
+    /// Pending class changes to apply during `run_update_props_pass`.
+    pub(crate) class_diff: ClassSetDiff,
+    /// Cached property stack resolutions for this widget.
+    pub(crate) property_cache: PropertyCache,
+
     // --- DEBUG INFO ---
     /// The typename of the associated widget.
     ///
@@ -270,6 +287,7 @@ impl WidgetState {
         widget_name: &'static str,
         options: WidgetOptions,
         action_type: TypeId,
+        property_stack_id: Option<PropertyStackId>,
         #[cfg(debug_assertions)] action_type_name: &'static str,
     ) -> Self {
         Self {
@@ -307,6 +325,7 @@ impl WidgetState {
             request_paint: true,
             request_post_paint: true,
             needs_paint: true,
+            paint_layer_mode: PaintLayerMode::Inline,
             request_accessibility: true,
             needs_accessibility: true,
             request_anim: true,
@@ -315,6 +334,8 @@ impl WidgetState {
             needs_update_stashed: true,
             descendant_is_focusable: false,
             needs_update_focusable: true,
+            request_update_props: false,
+            needs_update_props: false,
             children_changed: true,
 
             is_explicitly_disabled: options.disabled,
@@ -326,6 +347,10 @@ impl WidgetState {
             has_active: false,
             is_active: false,
             has_focus_target: false,
+
+            property_stack_id,
+            class_diff: ClassSetDiff::default(),
+            property_cache: PropertyCache::default(),
 
             trace_span: Span::none(),
             #[cfg(debug_assertions)]
@@ -355,7 +380,10 @@ impl WidgetState {
         self.children_changed |= child_state.children_changed;
         self.needs_update_focusable |= child_state.needs_update_focusable;
         self.needs_update_stashed |= child_state.needs_update_stashed;
+        self.needs_update_props |= child_state.needs_update_props;
     }
+
+    // TODO: Add WidgetState::add_diff method that merges a ClassSetDiff into the WidgetState's class_diff.
 
     /// Returns `true` if this widget or a descendant explicitly requested layout.
     pub(crate) fn needs_layout(&self) -> bool {
@@ -470,5 +498,6 @@ impl WidgetState {
             || self.needs_update_stashed
             || self.needs_update_focusable
             || self.children_changed
+            || self.needs_update_props
     }
 }

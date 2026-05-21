@@ -11,7 +11,7 @@ use masonry::core::{
     ErasedAction, NewWidget, PointerButton, PropertySet, StyleProperty, Widget as _, WidgetId,
 };
 use masonry::dpi::LogicalSize;
-use masonry::layout::Length;
+use masonry::layout::{AsUnit, Length};
 use masonry::peniko::Color;
 use masonry::properties::{BorderColor, BorderWidth, Gap};
 use masonry::theme::default_property_set;
@@ -63,14 +63,14 @@ pub fn make_grid(grid_gap: f64) -> NewWidget<Grid> {
         TextArea::new_immutable("Change spacing by right and left clicking on the buttons")
             .with_style(StyleProperty::FontSize(14.0))
             .with_text_alignment(TextAlign::Center)
-            .with_auto_id(),
+            .prepare(),
     );
-    let label = SizedBox::new(label.with_auto_id());
+    let label = SizedBox::new(label.prepare());
 
     let props = PropertySet::new()
         .with(BorderColor::new(Color::from_rgb8(40, 40, 80)))
-        .with(BorderWidth::all(1.0));
-    let label = SizedBox::new(NewWidget::new_with_props(label, props));
+        .with(BorderWidth::all(1.px()));
+    let label = SizedBox::new(NewWidget::new(label).with_props(props));
 
     let button_inputs = vec![
         GridParams {
@@ -119,16 +119,13 @@ pub fn make_grid(grid_gap: f64) -> NewWidget<Grid> {
 
     // Arrange widgets in a 4 by 4 grid.
     let mut main_widget =
-        Grid::with_dimensions(4, 4).with(label.with_auto_id(), GridParams::new(1, 0, 1, 1));
+        Grid::with_dimensions(4, 4).with(label.prepare(), GridParams::new(1, 0, 1, 1));
     for button_input in button_inputs {
         let button = grid_button(button_input);
-        main_widget = main_widget.with(button.with_auto_id(), button_input);
+        main_widget = main_widget.with(button.prepare(), button_input);
     }
 
-    NewWidget::new_with_props(
-        main_widget,
-        PropertySet::one(Gap::new(Length::px(grid_gap))),
-    )
+    NewWidget::new(main_widget).with_props(PropertySet::one(Gap::new(Length::px(grid_gap))))
 }
 
 fn main() {
@@ -166,9 +163,9 @@ mod tests {
 
     #[test]
     fn screenshot_test() {
-        let mut test_params = TestHarnessParams::default();
         // This is a screenshot of an example, so it being slightly larger than a normal test is expected.
-        test_params.max_screenshot_size = 16 * TestHarnessParams::KIBIBYTE;
+        let test_params =
+            TestHarnessParams::default().with_max_screenshot_size(16 * TestHarnessParams::KIBIBYTE);
         let mut harness =
             TestHarness::create_with(default_property_set(), make_grid(1.0), test_params);
         assert_render_snapshot!(harness, "example_grid_masonry_initial");

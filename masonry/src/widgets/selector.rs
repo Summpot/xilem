@@ -3,7 +3,6 @@
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::keyboard::{Key, NamedKey};
 use crate::core::{
@@ -11,9 +10,10 @@ use crate::core::{
     PaintCtx, PointerButtonEvent, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx,
     TextEvent, Update, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Size, Vec2};
 use crate::layers::SelectorMenu;
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{AsUnit, LayoutSize, LenReq, Length, SizeDef};
 use crate::theme;
 use crate::util::debug_panic;
 use crate::widgets::{Label, SelectorItem};
@@ -159,15 +159,11 @@ impl Widget for Selector {
         event: &PointerEvent,
     ) {
         match event {
-            PointerEvent::Down(..) => {
-                if self.menu_layer_id.is_none() {
-                    ctx.capture_pointer();
-                }
+            PointerEvent::Down(..) if self.menu_layer_id.is_none() => {
+                ctx.capture_pointer();
             }
-            PointerEvent::Up(PointerButtonEvent { .. }) => {
-                if ctx.is_active() && ctx.is_hovered() {
-                    self.toggle_selector_layer(ctx);
-                }
+            PointerEvent::Up(PointerButtonEvent { .. }) if ctx.is_active() && ctx.is_hovered() => {
+                self.toggle_selector_layer(ctx);
             }
             _ => (),
         }
@@ -180,12 +176,12 @@ impl Widget for Selector {
         event: &TextEvent,
     ) {
         match event {
-            TextEvent::Keyboard(event) if event.state.is_up() => {
-                if matches!(&event.key, Key::Character(c) if c == " ")
-                    || event.key == Key::Named(NamedKey::Enter)
-                {
-                    self.toggle_selector_layer(ctx);
-                }
+            TextEvent::Keyboard(event)
+                if event.state.is_up()
+                    && (matches!(&event.key, Key::Character(c) if c == " ")
+                        || event.key == Key::Named(NamedKey::Enter)) =>
+            {
+                self.toggle_selector_layer(ctx);
                 // TODO - On arrow key, change selected_item
             }
             // TODO - Handle text selection
@@ -231,12 +227,8 @@ impl Widget for Selector {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -255,8 +247,8 @@ impl Widget for Selector {
         // we make sure we will have at least the same height as the default text input.
         // We also set a minimum width.
         match axis {
-            Axis::Horizontal => length.max(theme::SELECTOR_MIN_WIDTH * scale),
-            Axis::Vertical => length.max(theme::BORDERED_WIDGET_HEIGHT * scale),
+            Axis::Horizontal => length.max(theme::SELECTOR_MIN_WIDTH.px()),
+            Axis::Vertical => length.max(theme::BORDERED_WIDGET_HEIGHT.px()),
         }
     }
 
@@ -270,7 +262,13 @@ impl Widget for Selector {
         ctx.derive_baselines(&self.child);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::ComboBox

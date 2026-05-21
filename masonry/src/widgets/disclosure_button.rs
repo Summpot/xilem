@@ -11,13 +11,12 @@ use crate::core::{
     PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget,
     WidgetMut,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, BezPath, Join, Size, Stroke};
 use crate::layout::{LenReq, Length};
 use crate::palette::css::LIGHT_BLUE;
 use crate::peniko::BrushRef;
 use crate::properties::ContentColor;
-use crate::util::stroke;
-use crate::vello::Scene;
 
 // Default size is a square
 const DEFAULT_LENGTH: Length = Length::const_px(8.);
@@ -72,20 +71,18 @@ impl Widget for DisclosureButton {
         event: &PointerEvent,
     ) {
         match event {
-            PointerEvent::Down { .. } => {
-                if !ctx.is_disabled() {
-                    ctx.capture_pointer();
-                    // Checked state impacts appearance and accessibility node
-                    ctx.request_render();
-                }
+            PointerEvent::Down { .. } if !ctx.is_disabled() => {
+                ctx.capture_pointer();
+                // Checked state impacts appearance and accessibility node
+                ctx.request_render();
             }
-            PointerEvent::Up { .. } => {
-                if ctx.is_pointer_capture_target() && ctx.is_hovered() && !ctx.is_disabled() {
-                    self.switch_disclosed_state();
-                    ctx.request_layout();
+            PointerEvent::Up { .. }
+                if ctx.is_pointer_capture_target() && ctx.is_hovered() && !ctx.is_disabled() =>
+            {
+                self.switch_disclosed_state();
+                ctx.request_layout();
 
-                    // TODO: Submit actions?
-                }
+                // TODO: Submit actions?
             }
             _ => (),
         }
@@ -98,15 +95,15 @@ impl Widget for DisclosureButton {
         event: &TextEvent,
     ) {
         match event {
-            TextEvent::Keyboard(event) if event.state.is_up() => {
-                if matches!(&event.key, Key::Character(c) if c == " ")
-                    || event.key == Key::Named(NamedKey::Enter)
-                {
-                    self.switch_disclosed_state();
-                    ctx.request_layout();
+            TextEvent::Keyboard(event)
+                if event.state.is_up()
+                    && (matches!(&event.key, Key::Character(c) if c == " ")
+                        || event.key == Key::Named(NamedKey::Enter)) =>
+            {
+                self.switch_disclosed_state();
+                ctx.request_layout();
 
-                    // TODO: Submit actions?
-                }
+                // TODO: Submit actions?
             }
             _ => (),
         }
@@ -147,13 +144,9 @@ impl Widget for DisclosureButton {
         _props: &PropertiesRef<'_>,
         _axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let length = DEFAULT_LENGTH.dp(scale);
+        _cross_length: Option<Length>,
+    ) -> Length {
+        let length = DEFAULT_LENGTH;
 
         match len_req {
             LenReq::MinContent | LenReq::MaxContent => length,
@@ -163,11 +156,14 @@ impl Widget for DisclosureButton {
 
     fn layout(&mut self, _ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, _size: Size) {}
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-        let button_color = props.get::<ContentColor>();
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let cache = ctx.property_cache();
+        let button_color = props.get::<ContentColor>(cache);
 
         let size = ctx.content_box_size();
         let half_size = size * 0.5;
@@ -184,18 +180,21 @@ impl Widget for DisclosureButton {
             affine = affine.pre_rotate(FRAC_PI_2);
         }
 
-        scene.stroke(
-            &Stroke::new(2.0 * scale).with_join(Join::Miter),
-            affine,
-            BrushRef::Solid(button_color.color),
-            None,
-            &arrow,
-        );
+        painter
+            .stroke(
+                arrow,
+                &Stroke::new(2.0).with_join(Join::Miter),
+                button_color.color,
+            )
+            .transform(affine)
+            .draw();
 
         if ctx.is_focus_target() {
             // TODO: Perhaps change the color of the arrow instead?
             let rect = ctx.border_box().to_rounded_rect(2.0);
-            stroke(scene, &rect, BrushRef::Solid(LIGHT_BLUE), 1.0 * scale);
+            painter
+                .stroke(rect, &Stroke::new(1.0), BrushRef::Solid(LIGHT_BLUE))
+                .draw();
         }
     }
 

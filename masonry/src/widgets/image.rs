@@ -5,16 +5,16 @@ use std::any::TypeId;
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
-    AccessCtx, ArcStr, ChildrenIds, HasProperty, LayoutCtx, MeasureCtx, NoAction, PaintCtx,
-    PropertiesMut, PropertiesRef, Property, RegisterCtx, Update, UpdateCtx, Widget, WidgetId,
+    AccessCtx, ArcStr, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx, PropertiesMut,
+    PropertiesRef, Property, RegisterCtx, Update, UpdateCtx, UsesProperty, Widget, WidgetId,
     WidgetMut,
 };
-use crate::kurbo::{Affine, Axis, Size};
-use crate::layout::LenReq;
-use crate::peniko::{BlendMode, Fill, ImageBrush};
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, Size};
+use crate::layout::{LenReq, Length};
+use crate::peniko::ImageBrush;
 use crate::properties::ObjectFit;
 
 // TODO: Make this a configurable option of the widget.
@@ -113,23 +113,19 @@ impl Image {
 impl Image {
     /// Returns the preferred size of the image.
     ///
-    /// The returned size is in device pixels.
+    /// The returned size is in logical pixels.
     ///
-    /// This takes into account both [`IMAGE_SCALE`] and `scale`, and so the result
-    /// isn't just the image data size which would be const across scale factors.
-    ///
-    /// This method's result will be stable in relation to other widgets at any scale factor.
-    ///
-    /// Basically it provides logical pixels in device pixel space.
-    fn preferred_size(&self, scale: f64) -> Size {
+    /// This takes into account [`IMAGE_SCALE`], so a high-resolution resource can
+    /// have a stable preferred logical size.
+    fn preferred_size(&self) -> Size {
         Size::new(
-            self.image_data.image.width as f64 * scale / IMAGE_SCALE,
-            self.image_data.image.height as f64 * scale / IMAGE_SCALE,
+            self.image_data.image.width as f64 / IMAGE_SCALE,
+            self.image_data.image.height as f64 / IMAGE_SCALE,
         )
     }
 }
 
-impl HasProperty<ObjectFit> for Image {}
+impl UsesProperty<ObjectFit> for Image {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Image {
@@ -153,44 +149,41 @@ impl Widget for Image {
 
     fn measure(
         &mut self,
-        _ctx: &mut MeasureCtx<'_>,
+        ctx: &mut MeasureCtx<'_>,
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let object_fit = props.get::<ObjectFit>();
-        let preferred_size = self.preferred_size(scale);
+        cross_length: Option<Length>,
+    ) -> Length {
+        let cache = ctx.property_cache();
+        let object_fit = props.get::<ObjectFit>(cache);
+        let preferred_size = self.preferred_size();
 
         object_fit.measure(axis, len_req, cross_length, preferred_size)
     }
 
     fn layout(&mut self, _ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, _size: Size) {}
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let content_box = ctx.content_box();
-        let object_fit = props.get::<ObjectFit>();
+        let cache = ctx.property_cache();
+        let object_fit = props.get::<ObjectFit>(cache);
         // For drawing we want to scale the actual image data lengths, which means
         // we need to avoid using Image::preferred_size which does not match the data.
         let image_size = Size::new(
             self.image_data.image.width as f64,
             self.image_data.image.height as f64,
         );
-        let transform = object_fit.affine(content_box.size(), image_size);
+        let transform = object_fit.affine(content_box, image_size.to_rect());
 
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.,
-            Affine::IDENTITY,
-            &content_box,
-        );
-        scene.draw_image(&self.image_data, transform);
-        scene.pop_layer();
+        painter.with_fill_clip(content_box, |painter| {
+            painter.draw_image(&self.image_data, transform);
+        });
     }
 
     fn accessibility_role(&self) -> Role {
@@ -273,7 +266,7 @@ mod tests {
         let image_widget = NewWidget::new(Image::new(image_data));
 
         let mut harness =
-            TestHarness::create_with_size(test_property_set(), image_widget, Size::new(40., 60.));
+            TestHarness::create_with_size(test_property_set(), image_widget, (40, 60));
         assert_render_snapshot!(harness, "image_tall_paint");
     }
 
@@ -290,11 +283,8 @@ mod tests {
         let render_1 = {
             let image_widget = NewWidget::new(Image::new(image_data.clone()));
 
-            let mut harness = TestHarness::create_with_size(
-                test_property_set(),
-                image_widget,
-                Size::new(40.0, 60.0),
-            );
+            let mut harness =
+                TestHarness::create_with_size(test_property_set(), image_widget, (40, 60));
 
             harness.render()
         };
@@ -309,11 +299,8 @@ mod tests {
             };
             let image_widget = NewWidget::new(Image::new(other_image_data));
 
-            let mut harness = TestHarness::create_with_size(
-                test_property_set(),
-                image_widget,
-                Size::new(40.0, 60.0),
-            );
+            let mut harness =
+                TestHarness::create_with_size(test_property_set(), image_widget, (40, 60));
 
             harness.edit_root_widget(|mut image| {
                 Image::set_image_data(&mut image, image_data);
@@ -336,11 +323,9 @@ mod tests {
             width: 8,
             height: 8,
         };
-        let harness_size = Size::new(100.0, 50.0);
-
         let image_widget = NewWidget::new(Image::new(image_data.clone()));
         let mut harness =
-            TestHarness::create_with_size(test_property_set(), image_widget, harness_size);
+            TestHarness::create_with_size(test_property_set(), image_widget, (100, 50));
 
         // Contain.
         harness.edit_root_widget(|mut image| {

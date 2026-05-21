@@ -2,22 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::TypeId;
+use std::sync::Arc;
 
 use accesskit::{Node, Role};
-use masonry_core::core::Property;
 use resvg::tiny_skia;
 use resvg::usvg::Tree;
 use tracing::{Span, trace_span};
-use vello::Scene;
-use vello::peniko::{ImageAlphaType, ImageData, ImageFormat};
 
 use crate::core::{
-    AccessCtx, ArcStr, ChildrenIds, HasProperty, LayoutCtx, MeasureCtx, NoAction, PaintCtx,
-    PropertiesMut, PropertiesRef, RegisterCtx, Update, UpdateCtx, Widget, WidgetId, WidgetMut,
+    AccessCtx, ArcStr, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx, PropertiesMut,
+    PropertiesRef, Property, RegisterCtx, Update, UpdateCtx, UsesProperty, Widget, WidgetId,
+    WidgetMut,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Size};
-use crate::layout::LenReq;
-use crate::peniko::{BlendMode, Fill, ImageBrush};
+use crate::layout::{LenReq, Length};
+use crate::peniko::{ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 use crate::properties::ObjectFit;
 
 // TODO: Make this a configurable option of the widget
@@ -35,7 +35,7 @@ const SVG_SCALE: f64 = 1.0;
 ///
 /// You can change the sizing of the SVG with the [`ObjectFit`] property.
 pub struct Svg {
-    tree: Tree,
+    tree: Arc<Tree>,
     rasterized: Option<ImageBrush>,
     decorative: bool,
     alt_text: Option<ArcStr>,
@@ -47,7 +47,7 @@ impl Svg {
     ///
     /// By default, the SVG will be scaled to fully fit within the container.
     /// ([`ObjectFit::Contain`]).
-    pub fn new(tree: Tree) -> Self {
+    pub fn new(tree: Arc<Tree>) -> Self {
         Self {
             tree,
             rasterized: None,
@@ -82,7 +82,7 @@ impl Svg {
 // --- MARK: WIDGETMUT
 impl Svg {
     /// Sets a new inner SVG.
-    pub fn set_tree(this: &mut WidgetMut<'_, Self>, tree: Tree) {
+    pub fn set_tree(this: &mut WidgetMut<'_, Self>, tree: Arc<Tree>) {
         this.widget.tree = tree;
         this.ctx.request_layout();
     }
@@ -108,24 +108,20 @@ impl Svg {
 impl Svg {
     /// Returns the preferred size of the SVG.
     ///
-    /// The returned size is in device pixels.
+    /// The returned size is in logical pixels.
     ///
-    /// This takes into account both [`SVG_SCALE`] and `scale`, and so the result
-    /// isn't just the SVG data size which would be const across scale factors.
-    ///
-    /// This method's result will be stable in relation to other widgets at any scale factor.
-    ///
-    /// Basically it provides logical pixels in device pixel space.
-    fn preferred_size(&self, scale: f64) -> Size {
+    /// This takes into account [`SVG_SCALE`], so rasterization can use a stable
+    /// preferred logical size.
+    fn preferred_size(&self) -> Size {
         let size = self.tree.size();
         Size::new(
-            size.width() as f64 * scale / SVG_SCALE,
-            size.height() as f64 * scale / SVG_SCALE,
+            size.width() as f64 / SVG_SCALE,
+            size.height() as f64 / SVG_SCALE,
         )
     }
 }
 
-impl HasProperty<ObjectFit> for Svg {}
+impl UsesProperty<ObjectFit> for Svg {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Svg {
@@ -149,18 +145,15 @@ impl Widget for Svg {
 
     fn measure(
         &mut self,
-        _ctx: &mut MeasureCtx<'_>,
+        ctx: &mut MeasureCtx<'_>,
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let object_fit = props.get::<ObjectFit>();
-        let preferred_size = self.preferred_size(scale);
+        cross_length: Option<Length>,
+    ) -> Length {
+        let cache = ctx.property_cache();
+        let object_fit = props.get::<ObjectFit>(cache);
+        let preferred_size = self.preferred_size();
 
         object_fit.measure(axis, len_req, cross_length, preferred_size)
     }
@@ -169,7 +162,12 @@ impl Widget for Svg {
         self.rasterized = None;
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let content_box = ctx.content_box();
 
         // NOTE: Ideally we would translate the SVG tree into scene draw calls.
@@ -183,14 +181,17 @@ impl Widget for Svg {
             }
             let mut pixmap = tiny_skia::Pixmap::new(pixmap_width, pixmap_height).unwrap();
 
-            let object_fit = props.get::<ObjectFit>();
+            let cache = ctx.property_cache();
+            let object_fit = props.get::<ObjectFit>(cache);
 
             // For drawing we want to scale the actual SVG data lengths, which means
             // we need to avoid using Svg::preferred_size which does not match the data.
             let svg_size = self.tree.size();
             let svg_size = Size::new(svg_size.width() as f64, svg_size.height() as f64);
 
-            let coeffs = object_fit.affine(content_box.size(), svg_size).as_coeffs();
+            let coeffs = object_fit
+                .affine(content_box.size().to_rect(), svg_size.to_rect())
+                .as_coeffs();
             let transform = tiny_skia::Transform::from_row(
                 coeffs[0] as f32,
                 coeffs[1] as f32,
@@ -215,15 +216,9 @@ impl Widget for Svg {
 
         let image = self.rasterized.as_ref().unwrap();
 
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.,
-            Affine::IDENTITY,
-            &content_box,
-        );
-        scene.draw_image(image, Affine::IDENTITY);
-        scene.pop_layer();
+        painter.with_fill_clip(content_box, |painter| {
+            painter.draw_image(image, Affine::IDENTITY);
+        });
     }
 
     fn accessibility_role(&self) -> Role {
@@ -269,7 +264,7 @@ mod tests {
     fn empty_tree() {
         let xml = r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#;
         let tree = Tree::from_str(xml, &usvg::Options::default()).unwrap();
-        let svg = Svg::new(tree).with_auto_id();
+        let svg = Svg::new(Arc::new(tree)).prepare();
         let mut harness = TestHarness::create(test_property_set(), svg);
         let _ = harness.render();
     }
@@ -343,10 +338,9 @@ mod tests {
         };
 
         let tree = Tree::from_str(xml, &opts).unwrap();
-        let svg = Svg::new(tree).with_auto_id();
+        let svg = Svg::new(Arc::new(tree)).prepare();
 
-        let window_size = Size::new(852., 320.);
-        let mut harness = TestHarness::create_with_size(test_property_set(), svg, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), svg, (852, 320));
 
         assert_render_snapshot!(harness, "svg_brick_wall");
     }

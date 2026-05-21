@@ -22,7 +22,7 @@
 //!
 //! Masonry is built on top of:
 //!
-//! - [Vello][vello] and [wgpu][vello::wgpu] for 2D graphics.
+//! - [Imaging][imaging] (by default [Vello][vello] and [wgpu][wgpu] for 2D graphics.
 //! - [Parley][parley] for the text stack.
 //! - [AccessKit][accesskit] for plugging into accessibility APIs.
 //!
@@ -77,7 +77,7 @@
 //!                 TextArea::reset_text(&mut text_area, "");
 //!             });
 //!             render_root.edit_widget_with_tag(LIST_TAG, |mut list| {
-//!                 let child = Label::new(self.next_task.clone()).with_auto_id();
+//!                 let child = Label::new(self.next_task.clone()).prepare();
 //!                 Flex::add_fixed(&mut list, child);
 //!             });
 //!         } else if action.is::<TextAction>() {
@@ -94,22 +94,20 @@
 //!
 //! /// Return initial to-do-list without items.
 //! pub fn make_widget_tree() -> NewWidget<impl Widget> {
-//!     let text_input = NewWidget::new_with_tag(
+//!     let text_input = NewWidget::new(
 //!         TextInput::new("").with_placeholder("ex: 'Do the dishes', 'File my taxes', ..."),
-//!         TEXT_INPUT_TAG,
-//!     );
+//!     )
+//!     .with_tag(TEXT_INPUT_TAG);
 //!     let button = NewWidget::new(Button::with_text("Add task"));
 //!
 //!     let list = Flex::column()
-//!         .with_fixed(NewWidget::new_with_props(
-//!             Flex::row()
-//!                 .with(text_input, 1.0)
-//!                 .with_fixed(button),
-//!             PropertySet::new().with(Padding::all(WIDGET_SPACING.get())),
-//!         ))
+//!         .with_fixed(
+//!             NewWidget::new(Flex::row().with(text_input, 1.0).with_fixed(button))
+//!                 .with_props(PropertySet::new().with(Padding::all(WIDGET_SPACING))),
+//!         )
 //!         .with_fixed_spacer(WIDGET_SPACING);
 //!
-//!     NewWidget::new(Portal::new(NewWidget::new_with_tag(list, LIST_TAG)))
+//!     NewWidget::new(Portal::new(NewWidget::new(list).with_tag(LIST_TAG)))
 //! }
 //!
 //! fn main() {
@@ -154,7 +152,7 @@
 //! The following crate [feature flags](https://doc.rust-lang.org/cargo/reference/features.html#dependency-features) are available:
 //!
 //! - `default`: Enables the default features of [Masonry Core][masonry_core], [Masonry Testing][masonry_testing]
-//!   (if enabled via the `testing` feature), and [Vello][vello].
+//!   (if enabled via the `testing` feature).
 //! - `tracy`: Enables creating output for the [Tracy](https://github.com/wolfpld/tracy) profiler using [`tracing-tracy`][tracing_tracy].
 //!   This can be used by installing Tracy and connecting to a Masonry with this feature enabled.
 //! - `testing`: Re-exports the test harness from [Masonry Testing][masonry_testing].
@@ -171,7 +169,10 @@
 //!
 //! [masonry_winit]: https://crates.io/crates/masonry_winit
 //! [Xilem]: https://github.com/linebender/xilem/tree/main/xilem
+//! [masonry_testing]: https://docs.rs/masonry_testing/latest/masonry_testing/
 //! [tracing_tracy]: https://crates.io/crates/tracing-tracy
+//! [vello]: https://crates.io/crates/vello
+//! [wgpu]: https://crates.io/crates/wgpu
 #![cfg_attr(
     not(docsrs),
     doc = "\n**Warning: This documentation is meant to be read on docs.rs. Screenshots may fail to load otherwise.**\n\n"
@@ -201,7 +202,6 @@
     )
 )]
 // TODO: Remove any items listed as "Deferred"
-#![expect(missing_debug_implementations, reason = "Deferred: Noisy")]
 #![expect(clippy::cast_possible_truncation, reason = "Deferred: Noisy")]
 #![expect(clippy::single_match, reason = "General policy not decided")]
 
@@ -217,11 +217,9 @@ pub mod theme;
 pub mod widgets;
 
 pub use accesskit;
-pub use parley::{Alignment as TextAlign, AlignmentOptions as TextAlignOptions};
-pub use vello::peniko::color::palette;
-pub use vello::{kurbo, peniko};
-pub use {dpi, parley, vello};
-
-pub use masonry_core::{app, core, layout, ui_events, util};
+pub use masonry_core::imaging;
+pub use masonry_core::palette;
+pub use masonry_core::{app, core, dpi, kurbo, layout, parley, peniko, ui_events, util};
 #[cfg(any(feature = "testing", test))]
 pub use masonry_testing as testing;
+pub use parley::{Alignment as TextAlign, AlignmentOptions as TextAlignOptions};

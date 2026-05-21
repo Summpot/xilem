@@ -5,23 +5,27 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use accesskit::{ActionRequest, NodeId, TreeUpdate};
+use accesskit::{ActionRequest, NodeId, TreeId, TreeUpdate};
 use dpi::{LogicalPosition, LogicalSize, PhysicalSize};
-use parley::fontique::{Blob, Collection, CollectionOptions, FamilyId, FontInfo, SourceCache};
+use kurbo::{Point, Rect, Size};
+use parley::fontique::{
+    Blob, Collection, CollectionOptions, FallbackKey, FamilyId, FontInfo, Script, SourceCache,
+};
 use parley::{FontContext, LayoutContext};
 use tracing::{debug, info_span, warn};
 use tree_arena::{ArenaMut, TreeArena};
-use vello::Scene;
-use vello::kurbo::{Point, Rect, Size};
 
+use crate::app::VisualLayerPlan;
 use crate::app::layer_stack::LayerStack;
 use crate::core::{
     AccessCtx, AccessEvent, BrushIndex, CursorIcon, DefaultProperties, ErasedAction, FromDynWidget,
-    Handled, Ime, LayerType, NewWidget, PointerEvent, PropertiesRef, QueryCtx, ResizeDirection,
-    TextEvent, Widget, WidgetArena, WidgetArenaNode, WidgetId, WidgetMut, WidgetPod, WidgetRef,
-    WidgetState, WidgetTag, WidgetTagInner, WindowEvent,
+    Handled, Ime, LayerType, NewWidget, PointerEvent, PropertiesRef, PropertyArena, QueryCtx,
+    ResizeDirection, TextEvent, Widget, WidgetArena, WidgetArenaNode, WidgetId, WidgetMut,
+    WidgetPod, WidgetRef, WidgetState, WidgetTag, WidgetTagInner, WindowEvent,
 };
+use crate::imaging::record::Scene;
 use crate::passes::accessibility::run_accessibility_pass;
+use crate::passes::action::run_action_pass;
 use crate::passes::anim::run_update_anim_pass;
 use crate::passes::compose::run_compose_pass;
 use crate::passes::event::{
@@ -29,10 +33,10 @@ use crate::passes::event::{
 };
 use crate::passes::layout::run_layout_pass;
 use crate::passes::mutate::{mutate_widget, run_mutate_pass};
-use crate::passes::paint::{PaintResult, run_paint_pass};
+use crate::passes::paint::run_paint_pass;
 use crate::passes::update::{
     run_update_disabled_pass, run_update_focus_pass, run_update_focusable_pass,
-    run_update_fonts_pass, run_update_pointer_pass, run_update_scroll_pass,
+    run_update_fonts_pass, run_update_pointer_pass, run_update_props_pass, run_update_scroll_pass,
     run_update_stashed_pass, run_update_widget_tree_pass,
 };
 use crate::passes::{PassTracing, recurse_on_children};
@@ -54,6 +58,21 @@ pub struct RenderRoot {
     /// `WidgetPod` handle for the layer stack, which holds the root widget of each layer.
     pub(crate) layer_stack: WidgetPod<LayerStack>,
 
+    /// Property data, including property stacks and per-widget-type default properties.
+    pub(crate) property_arena: PropertyArena,
+
+    /// State passed to context types.
+    pub(crate) global_state: RenderRootState,
+
+    /// The widget tree; stores widgets and their states.
+    pub(crate) widget_arena: WidgetArena,
+}
+
+/// State shared between passes.
+pub(crate) struct RenderRootState {
+    /// Sink for signals to be processed by the event loop.
+    pub(crate) signal_sink: Box<dyn FnMut(RenderRootSignal)>,
+
     /// The accessibility pass creates a wrapper node for the app with `Role::Window`.
     ///
     /// This is the id of that node.
@@ -67,21 +86,6 @@ pub struct RenderRoot {
 
     /// Last mouse position. Updated by `on_pointer_event` pass, used by other passes.
     pub(crate) last_mouse_pos: Option<LogicalPosition<f64>>,
-
-    /// Default values that properties will have if not defined per-widget.
-    pub(crate) default_properties: Arc<DefaultProperties>,
-
-    /// State passed to context types.
-    pub(crate) global_state: RenderRootState,
-
-    /// The widget tree; stores widgets and their states.
-    pub(crate) widget_arena: WidgetArena,
-}
-
-/// State shared between passes.
-pub(crate) struct RenderRootState {
-    /// Sink for signals to be processed by the event loop.
-    pub(crate) signal_sink: Box<dyn FnMut(RenderRootSignal)>,
 
     /// Currently focused widget.
     pub(crate) focused_widget: Option<WidgetId>,
@@ -132,6 +136,9 @@ pub(crate) struct RenderRootState {
 
     /// List of callbacks that will run in the next `mutate` pass.
     pub(crate) mutate_callbacks: Vec<MutateCallback>,
+
+    /// List of actions that will be handled in the next `action` pass.
+    pub(crate) actions: Vec<(ErasedAction, WidgetId)>,
 
     /// Whether an IME session is active.
     pub(crate) is_ime_active: bool,
@@ -186,6 +193,7 @@ pub enum WindowSizePolicy {
 }
 
 /// Options for creating a [`RenderRoot`].
+#[derive(Debug)]
 pub struct RenderRootOptions {
     /// Default values that properties will have if not defined per-widget.
     pub default_properties: Arc<DefaultProperties>,
@@ -322,18 +330,18 @@ impl RenderRoot {
         // LayerStack can't use Dimensions::AUTO because it'll resolve to the window size.
         // Instead we want to always measure LayerStack, so it can measure its base layer.
         let layer_stack = LayerStack::new(root_widget)
+            .prepare()
             .with_props(Dimensions::MAX)
             .to_pod();
 
         let mut root = Self {
             layer_stack,
-            window_node_id: AccessCtx::next_node_id(),
-            size_policy,
-            size,
-            last_mouse_pos: None,
-            default_properties,
             global_state: RenderRootState {
                 signal_sink: Box::new(signal_sink),
+                window_node_id: AccessCtx::next_node_id(),
+                size_policy,
+                size,
+                last_mouse_pos: None,
                 focused_widget: None,
                 focused_path: Vec::new(),
                 next_focused_widget: None,
@@ -354,6 +362,7 @@ impl RenderRoot {
                 },
                 text_layout_context: LayoutContext::new(),
                 mutate_callbacks: Vec::new(),
+                actions: Vec::new(),
                 is_ime_active: false,
                 last_sent_ime_area: INVALID_IME_AREA,
                 scene_cache: HashMap::new(),
@@ -369,6 +378,7 @@ impl RenderRoot {
                 scale_factor,
                 debug_paint,
             },
+            property_arena: PropertyArena::new(default_properties),
             widget_arena: WidgetArena {
                 nodes: TreeArena::new(),
             },
@@ -386,16 +396,21 @@ impl RenderRoot {
                 .register_fonts(test_font_data, None);
             // Make sure that all of these fonts are in the fallback chain for the Latin script.
             // <https://en.wikipedia.org/wiki/Script_(Unicode)#Latn>
-            root.global_state
-                .font_context
-                .collection
-                .append_fallbacks(*b"Latn", families.iter().map(|(family, _)| *family));
+            root.global_state.font_context.collection.append_fallbacks(
+                FallbackKey::new(Script::from_bytes(*b"Latn"), None),
+                families.iter().map(|(family, _)| *family),
+            );
         }
 
         // We run a set of passes to initialize the widget tree
         root.run_rewrite_passes();
 
         root
+    }
+
+    /// Returns a mutable reference to the `PropertyArena`.
+    pub fn property_arena(&mut self) -> &mut PropertyArena {
+        &mut self.property_arena
     }
 
     pub(crate) fn root_id(&self) -> WidgetId {
@@ -412,13 +427,13 @@ impl RenderRoot {
         let widget = &*node_ref.item.widget;
 
         let stack = (widget as &dyn Any).downcast_ref::<LayerStack>().unwrap();
-        stack.layer_id(layer_idx)
+        stack.layer_root_id(layer_idx)
     }
 
     /// Returns the widget ID of each layer, in stack order.
     ///
     /// Index 0 is the base layer; subsequent entries are overlay layers.
-    pub(crate) fn layer_ids(&self) -> Vec<WidgetId> {
+    pub(crate) fn layer_root_ids(&self) -> Vec<WidgetId> {
         let node_ref = self
             .widget_arena
             .nodes
@@ -428,7 +443,7 @@ impl RenderRoot {
 
         let stack = (widget as &dyn Any).downcast_ref::<LayerStack>().unwrap();
         (0..stack.layer_count())
-            .map(|i| stack.layer_id(i))
+            .map(|i| stack.layer_root_id(i))
             .collect()
     }
 
@@ -437,7 +452,7 @@ impl RenderRoot {
             .widget_arena
             .nodes
             .roots()
-            .into_item(self.root_id())
+            .item(self.root_id())
             .expect("root widget not in widget tree")
             .item
             .state
@@ -464,7 +479,7 @@ impl RenderRoot {
                 Handled::Yes
             }
             WindowEvent::Resize(size) => {
-                self.size = size;
+                self.global_state.size = size;
                 self.root_state_mut().request_layout = true;
                 self.root_state_mut().set_needs_layout(true);
                 self.run_rewrite_passes();
@@ -522,7 +537,14 @@ impl RenderRoot {
     /// Handles an accesskit event.
     pub fn handle_access_event(&mut self, event: ActionRequest) {
         let _span = info_span!("access_event");
-        let Ok(id) = event.target.0.try_into() else {
+        if event.target_tree != TreeId::ROOT {
+            warn!(
+                "Received ActionRequest for an unknown tree. {:?}",
+                event.target_tree
+            );
+            return;
+        }
+        let Ok(id) = event.target_node.0.try_into() else {
             warn!("Received ActionRequest with id 0. This shouldn't be possible.");
             return;
         };
@@ -551,18 +573,17 @@ impl RenderRoot {
 
     /// Redraws the window.
     ///
-    /// Returns an update to the accessibility tree and a Vello scene representing
-    /// the widget tree's current state.
-    pub fn redraw(&mut self) -> (PaintResult, Option<TreeUpdate>) {
+    /// Returns the current visual-layer plan and, if accessibility is active, a tree update.
+    pub fn redraw(&mut self) -> (VisualLayerPlan, Option<TreeUpdate>) {
         self.run_rewrite_passes();
 
         let access_tree_active = self.global_state.access_tree_active;
 
         // TODO - Handle invalidation regions
-        let paint_result = run_paint_pass(self);
+        let visual_layers = run_paint_pass(self);
         let tree_update = access_tree_active
             .then(|| run_accessibility_pass(self, self.global_state.scale_factor));
-        (paint_result, tree_update)
+        (visual_layers, tree_update)
     }
 
     /// Returns the current icon that the mouse should display.
@@ -581,7 +602,8 @@ impl RenderRoot {
             Some(capture_target)
         } else {
             let scale_factor = self.global_state.scale_factor.max(f64::EPSILON);
-            let logical_pos = Point::new(physical_pos.x / scale_factor, physical_pos.y / scale_factor);
+            let logical_pos =
+                Point::new(physical_pos.x / scale_factor, physical_pos.y / scale_factor);
 
             self.get_widget(self.root_id())
                 .expect("root widget not in widget tree")
@@ -624,16 +646,25 @@ impl RenderRoot {
         let widget = &*node_ref.item.widget;
         let state = &node_ref.item.state;
         let properties = &node_ref.item.properties;
+        let class_set = &node_ref.item.class_set;
+        let stack = self
+            .property_arena
+            .get(state.property_stack_id, widget.type_id());
 
         let ctx = QueryCtx {
             global_state: &self.global_state,
             widget_state: state,
             properties: PropertiesRef {
-                set: properties,
-                default_map: self.default_properties.for_widget(widget.type_id()),
+                local: properties,
+                default_map: self
+                    .property_arena
+                    .default_properties
+                    .for_widget(widget.type_id()),
+                stack,
+                class_set,
             },
             children,
-            default_properties: &self.default_properties,
+            property_arena: &self.property_arena,
         };
         Some(WidgetRef { ctx, widget })
     }
@@ -749,8 +780,8 @@ impl RenderRoot {
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if the the intended layer the base layer or the
-    /// intended layer is not found.
+    /// Panics in debug mode if the intended layer is the base layer or
+    /// is not found.
     pub fn remove_layer(&mut self, root_id: WidgetId) {
         mutate_widget(self, self.root_id(), |mut layer_stack| {
             let mut layer_stack = layer_stack.downcast::<LayerStack>();
@@ -768,8 +799,8 @@ impl RenderRoot {
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if the the intended layer the base layer or the
-    /// intended layer is not found.
+    /// Panics in debug mode if the intended layer is the base layer or
+    /// is not found.
     pub fn reposition_layer(&mut self, root_id: WidgetId, new_origin: Point) {
         mutate_widget(self, self.root_id(), |mut layer_stack| {
             let mut layer_stack = layer_stack.downcast::<LayerStack>();
@@ -781,11 +812,14 @@ impl RenderRoot {
 
     /// Returns the current size of the window.
     pub fn size(&self) -> PhysicalSize<u32> {
-        self.size
+        self.global_state.size
     }
 
     pub(crate) fn get_kurbo_size(&self) -> Size {
-        let size = self.size.to_logical(self.global_state.scale_factor);
+        let size = self
+            .global_state
+            .size
+            .to_logical(self.global_state.scale_factor);
         Size::new(size.width, size.height)
     }
 
@@ -805,6 +839,7 @@ impl RenderRoot {
             // Calling a run_xxx_pass should always be very fast if the pass doesn't need to do anything.
 
             run_mutate_pass(self);
+            run_action_pass(self);
             run_update_widget_tree_pass(self);
             run_update_disabled_pass(self);
             run_update_stashed_pass(self);
@@ -814,6 +849,7 @@ impl RenderRoot {
             run_update_scroll_pass(self);
             run_compose_pass(self);
             run_update_pointer_pass(self);
+            run_update_props_pass(self);
 
             if !self.needs_rewrite_passes() {
                 break;
@@ -984,6 +1020,27 @@ impl RenderRoot {
     }
 }
 
+impl std::fmt::Debug for RenderRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderRoot")
+            .field("property_arena", &self.property_arena)
+            .field(
+                "widget_arena",
+                &format!("<{} widgets>", self.widget_arena.nodes.len()),
+            )
+            .field("layer_stack", &self.layer_stack)
+            .field("global_state", &self.global_state)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for RenderRootState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO - Document fields?
+        f.debug_struct("RenderRootState").finish_non_exhaustive()
+    }
+}
+
 impl RenderRootState {
     /// Sends a signal to the runner of this app, which allows global actions to be triggered by a widget.
     pub(crate) fn emit_signal(&mut self, signal: RenderRootSignal) {
@@ -999,6 +1056,7 @@ impl RenderRootState {
         self.needs_pointer_pass
             || self.focused_widget != self.next_focused_widget
             || !self.mutate_callbacks.is_empty()
+            || !self.actions.is_empty()
     }
 }
 

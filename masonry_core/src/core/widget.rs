@@ -7,18 +7,18 @@ use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use accesskit::{Node, Role};
+use kurbo::{Axis, Point, Size};
 use smallvec::SmallVec;
 use tracing::field::DisplayValue;
 use tracing::{Span, trace_span};
-use vello::Scene;
-use vello::kurbo::{Axis, Point, Size};
 
 use crate::core::{
-    AccessCtx, AccessEvent, ComposeCtx, CursorIcon, EventCtx, Layer, LayoutCtx, MeasureCtx,
-    NewWidget, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, PropertySet, QueryCtx,
-    RegisterCtx, TextEvent, Update, UpdateCtx, WidgetMut, WidgetRef, pre_paint,
+    AccessCtx, AccessEvent, ActionCtx, ComposeCtx, CursorIcon, ErasedAction, EventCtx, Layer,
+    LayoutCtx, MeasureCtx, NewWidget, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef,
+    QueryCtx, RegisterCtx, TextEvent, Update, UpdateCtx, WidgetMut, WidgetRef, pre_paint,
 };
-use crate::layout::LenReq;
+use crate::imaging::Painter;
+use crate::layout::{LenReq, Length};
 
 /// A unique identifier for a single [`Widget`].
 ///
@@ -37,7 +37,7 @@ use crate::layout::LenReq;
 ///
 /// You can't create a widget with a pre-allocated `WidgetId`.
 /// If you want to create a widget in a way that lets you refer to it later,
-/// see [`NewWidget::new_with_tag`](crate::core::NewWidget::new_with_tag).
+/// see [`NewWidget::with_tag`](crate::core::NewWidget::with_tag).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct WidgetId(pub(crate) NonZeroU64);
 
@@ -211,6 +211,19 @@ pub trait Widget: AsDynWidget + Any {
     ) {
     }
 
+    /// Handles an `action` from a `source` widget deeper in the tree.
+    ///
+    /// If the action isn't marked as handled then it will bubble up the widget tree
+    /// and eventually to the app driver.
+    fn on_action(
+        &mut self,
+        ctx: &mut ActionCtx<'_>,
+        props: &mut PropertiesMut<'_>,
+        action: &ErasedAction,
+        source: WidgetId,
+    ) {
+    }
+
     // TODO - Reorder methods to match 02_implementing_widget.md
 
     /// Registers child widgets with Masonry.
@@ -233,10 +246,7 @@ pub trait Widget: AsDynWidget + Any {
     /// Handles a property being added, changed, or removed.
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {}
 
-    /// Computes the content-box length that the widget wants to be on the given `axis`.
-    ///
-    /// The returned length must be finite, non-negative, and in device pixels.
-    /// If an invalid length is returned, Masonry will treat it as zero.
+    /// Computes the content-box [`Length`] that the widget wants to be on the given `axis`.
     ///
     /// The goal of this method is for a parent to learn how its children want to be sized.
     /// All the inputs are hints towards what the parent is planning for its child.
@@ -258,7 +268,7 @@ pub trait Widget: AsDynWidget + Any {
     /// then you should use [`redirect_measurement`] to have the child answer for you.
     ///
     /// The `cross_length`, if present, says that the cross-axis of the given `axis` of this
-    /// measured widget's content-box can be presumed to be `cross_length` long, in device pixels.
+    /// measured widget's content-box can be presumed to be `cross_length` long.
     /// This information is often very useful for measuring `axis` and should be used.
     /// However, ultimately it may end up not materializing. That is to say, it is
     /// a valid assumption for the duration of this `measure` call but there is
@@ -297,15 +307,6 @@ pub trait Widget: AsDynWidget + Any {
     /// or you need to request layout for reasons that don't affect the result of this computation,
     /// then your widget should also have its own inner cache layer to avoid redoing the same work.
     ///
-    /// As for the inputs provided to `measure`, `len_req` must be [sanitized] and
-    /// `cross_length`, if present, must be [sanitized] and in device pixels.
-    /// When Masonry calls `measure` during the layout pass, it guarantees that for these inputs.
-    ///
-    /// # Panics
-    ///
-    /// Masonry will panic if `measure` returns a non-finite or negative value
-    /// and debug assertions are enabled.
-    ///
     /// [`compute_length`]: MeasureCtx::compute_length
     /// [`redirect_measurement`]: MeasureCtx::redirect_measurement
     /// [sanitized]: crate::util::Sanitize
@@ -319,8 +320,8 @@ pub trait Widget: AsDynWidget + Any {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64;
+        cross_length: Option<Length>,
+    ) -> Length;
 
     /// Lays out the widget with the given content-box `size`.
     ///
@@ -348,7 +349,7 @@ pub trait Widget: AsDynWidget + Any {
     /// Container widgets must not add or remove children during layout.
     /// Doing so is a logic error and may lead to panics.
     ///
-    /// The `size` given to this method must be finite, non-negative, and in device pixels.
+    /// The `size` given to this method must be finite, non-negative, and in logical pixels.
     /// When Masonry calls `layout` during the layout pass, it will guarantee that for `size`.
     ///
     /// [`compute_size`]: LayoutCtx::compute_size
@@ -369,21 +370,36 @@ pub trait Widget: AsDynWidget + Any {
     ///
     /// This method is not constrained by the clip defined in [`LayoutCtx::set_clip_path`],
     /// and can paint things outside the clip.
-    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        pre_paint(ctx, props, scene);
+    fn pre_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        pre_paint(ctx, props, painter);
     }
 
     /// Paints the widget's content.
     ///
     /// This is called before the children are drawn.
     /// To draw on top of children, see [`Widget::post_paint`].
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene);
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    );
 
     /// Final paint method, which paints on top of the widget's children.
     ///
     /// This method is not constrained by the clip defined in [`LayoutCtx::set_clip_path`],
     /// and can paint things outside the clip.
-    fn post_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn post_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
     }
 
     /// Returns what kind of "thing" the widget fundamentally is.
@@ -401,7 +417,7 @@ pub trait Widget: AsDynWidget + Any {
     fn accessibility(
         &mut self,
         ctx: &mut AccessCtx<'_>,
-        _props: &PropertiesRef<'_>,
+        props: &PropertiesRef<'_>,
         node: &mut Node,
     );
 
@@ -543,19 +559,11 @@ pub trait Widget: AsDynWidget + Any {
     }
 
     /// Convenience method to wrap this in a [`NewWidget`].
-    fn with_auto_id(self) -> NewWidget<Self>
+    fn prepare(self) -> NewWidget<Self>
     where
         Self: Sized,
     {
         NewWidget::new(self)
-    }
-
-    /// Convenience method to wrap this in a [`NewWidget`] with the given [`PropertySet`].
-    fn with_props(self, props: impl Into<PropertySet>) -> NewWidget<Self>
-    where
-        Self: Sized,
-    {
-        NewWidget::new_with_props(self, props)
     }
 }
 

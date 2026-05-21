@@ -3,19 +3,36 @@
 
 //! Simple helpers for managing wgpu state and surfaces.
 //!
-//! This module is based on [`vello::util`](masonry_core::vello::util) module
-//! with modifications for transparent surfaces.
+//! This module is based on [`vello::util`] module with modifications
+//! for transparent surfaces.
 
-use masonry_core::vello::Error;
-use masonry_core::vello::wgpu::{self, MemoryBudgetThresholds, MemoryHints};
 use wgpu::util::{TextureBlitter, TextureBlitterBuilder};
 use wgpu::{
-    BlendComponent, BlendFactor, BlendState, CompositeAlphaMode, Device, Instance, PresentMode,
-    Surface, SurfaceConfiguration, SurfaceTexture, Texture, TextureFormat, TextureUsages,
-    TextureView,
+    self, BlendComponent, BlendFactor, BlendState, CompositeAlphaMode, Device, Instance,
+    MemoryBudgetThresholds, MemoryHints, PresentMode, Surface, SurfaceConfiguration, Texture,
+    TextureFormat, TextureUsages, TextureView,
 };
 
 use crate::app_driver::WgpuLimits;
+
+#[derive(Debug)]
+pub enum RenderSurfaceError {
+    CreateSurface(wgpu::CreateSurfaceError),
+    NoCompatibleDevice,
+    UnsupportedSurfaceFormat,
+}
+
+impl core::fmt::Display for RenderSurfaceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::CreateSurface(err) => write!(f, "creating surface failed: {err}"),
+            Self::NoCompatibleDevice => write!(f, "no compatible WGPU device found"),
+            Self::UnsupportedSurfaceFormat => write!(f, "unsupported surface format"),
+        }
+    }
+}
+
+impl std::error::Error for RenderSurfaceError {}
 
 /// Simple render context that maintains wgpu state for rendering the pipeline.
 pub(crate) struct RenderContext {
@@ -44,12 +61,11 @@ impl RenderContext {
         let backends = wgpu::Backends::from_env().unwrap_or_default();
         let flags = wgpu::InstanceFlags::from_build_config().with_env();
         let backend_options = wgpu::BackendOptions::from_env_or_default();
-        let instance = Instance::new(wgpu::InstanceDescriptor {
+        let instance = Instance::new(&wgpu::InstanceDescriptor {
             backends,
             flags,
             memory_budget_thresholds: MemoryBudgetThresholds::default(),
             backend_options,
-            display: None,
         });
         Self {
             instance,
@@ -95,9 +111,11 @@ impl RenderContext {
         width: u32,
         height: u32,
         present_mode: PresentMode,
-    ) -> Result<RenderSurface<'w>, Error> {
+    ) -> Result<RenderSurface<'w>, RenderSurfaceError> {
         self.create_render_surface(
-            self.instance.create_surface(window.into())?,
+            self.instance
+                .create_surface(window.into())
+                .map_err(RenderSurfaceError::CreateSurface)?,
             width,
             height,
             present_mode,
@@ -112,11 +130,11 @@ impl RenderContext {
         width: u32,
         height: u32,
         present_mode: PresentMode,
-    ) -> Result<RenderSurface<'w>, Error> {
+    ) -> Result<RenderSurface<'w>, RenderSurfaceError> {
         let dev_id = self
             .device(Some(&surface))
             .await
-            .ok_or(Error::NoCompatibleDevice)?;
+            .ok_or(RenderSurfaceError::NoCompatibleDevice)?;
 
         let device_handle = &self.devices[dev_id];
         let capabilities = surface.get_capabilities(&device_handle.adapter);
@@ -124,7 +142,7 @@ impl RenderContext {
             .formats
             .into_iter()
             .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
-            .ok_or(Error::UnsupportedSurfaceFormat)?;
+            .ok_or(RenderSurfaceError::UnsupportedSurfaceFormat)?;
 
         const PREMUL_BLEND_STATE: BlendState = BlendState {
             alpha: BlendComponent::REPLACE,
@@ -192,6 +210,7 @@ impl RenderContext {
             target_texture,
             target_view,
             blitter,
+            resizing: false,
         };
         self.configure_surface(&surface);
         Ok(surface)
@@ -207,6 +226,37 @@ impl RenderContext {
         surface.config.width = width;
         surface.config.height = height;
         self.configure_surface(surface);
+    }
+
+    /// Handles changes of the window resizing state for a surface.
+    ///
+    /// On macOS/Metal, interactive window resizing is driven by `CoreAnimation` transactions. During
+    /// that phase, enabling `present_with_transaction` avoids visible jitter.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn on_window_resize_state_change(
+        &self,
+        surface: &mut RenderSurface<'_>,
+        resizing: bool,
+    ) {
+        if surface.resizing == resizing {
+            return;
+        }
+
+        #[allow(
+            unsafe_code,
+            reason = "We only mutate a backend-specific flag on the Metal HAL surface when the runtime backend matches Metal"
+        )]
+        unsafe {
+            if let Some(hal_surface) = surface.surface.as_hal::<::wgpu::hal::api::Metal>() {
+                let guard = hal_surface.render_layer().lock();
+                guard.set_presents_with_transaction(resizing);
+            }
+        }
+
+        // The flag affects presentation behavior and must be applied via reconfigure.
+        self.configure_surface(surface);
+
+        surface.resizing = resizing;
     }
 
     pub(crate) fn set_present_mode(
@@ -253,7 +303,7 @@ impl RenderContext {
         let required_limits = match &self.requested_limits {
             WgpuLimits::Default => wgpu::Limits::default(),
             WgpuLimits::Adapter => adapter.limits(),
-            WgpuLimits::Custom(limits) => limits.clone(),
+            WgpuLimits::Custom(limits) => *limits.clone(),
         };
 
         let requested_features = wgpu::Features::CLEAR_TEXTURE | self.requested_features;
@@ -284,10 +334,12 @@ impl RenderContext {
     }
 }
 
-/// Vello uses a compute shader to render to the provided texture, which means that it can't bind the surface
-/// texture in most cases.
+/// Masonry renders into an intermediate texture because surface textures are not suitable for all
+/// backend paths directly.
 ///
-/// Because of this, we need to create an "intermediate" texture which we render to, and then blit to the surface.
+/// The Vello path needs storage binding for compute-based rendering, while the Vello Hybrid path
+/// renders through a color attachment. We therefore provision one intermediate texture that
+/// supports both backends and then blit to the surface.
 fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, TextureView) {
     let target_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -299,7 +351,10 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
+        usage: TextureUsages::STORAGE_BINDING
+            | TextureUsages::TEXTURE_BINDING
+            | TextureUsages::COPY_DST
+            | TextureUsages::RENDER_ATTACHMENT,
         format: TextureFormat::Rgba8Unorm,
         view_formats: &[],
     });
@@ -316,6 +371,7 @@ pub(crate) struct RenderSurface<'s> {
     pub target_texture: Texture,
     pub target_view: TextureView,
     pub blitter: TextureBlitter,
+    pub resizing: bool,
 }
 
 impl std::fmt::Debug for RenderSurface<'_> {
@@ -328,30 +384,8 @@ impl std::fmt::Debug for RenderSurface<'_> {
             .field("target_texture", &self.target_texture)
             .field("target_view", &self.target_view)
             .field("blitter", &"(Not Debug)")
+            .field("resizing", &self.resizing)
             .finish()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum SurfaceTextureStatus {
-    Timeout,
-    Occluded,
-    Outdated,
-    Lost,
-    Validation,
-}
-
-pub(crate) fn get_current_surface_texture(
-    surface: &Surface<'_>,
-) -> Result<SurfaceTexture, SurfaceTextureStatus> {
-    match surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(texture)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Ok(texture),
-        wgpu::CurrentSurfaceTexture::Timeout => Err(SurfaceTextureStatus::Timeout),
-        wgpu::CurrentSurfaceTexture::Occluded => Err(SurfaceTextureStatus::Occluded),
-        wgpu::CurrentSurfaceTexture::Outdated => Err(SurfaceTextureStatus::Outdated),
-        wgpu::CurrentSurfaceTexture::Lost => Err(SurfaceTextureStatus::Lost),
-        wgpu::CurrentSurfaceTexture::Validation => Err(SurfaceTextureStatus::Validation),
     }
 }
 

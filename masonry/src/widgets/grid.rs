@@ -6,15 +6,14 @@ use std::any::TypeId;
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
-    AccessCtx, ChildrenIds, CollectionWidget, HasProperty, LayoutCtx, MeasureCtx, NewWidget,
-    NoAction, PaintCtx, PropertiesRef, RegisterCtx, UpdateCtx, Widget, WidgetId, WidgetMut,
-    WidgetPod,
+    AccessCtx, ChildrenIds, CollectionWidget, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx,
+    PropertiesRef, RegisterCtx, UpdateCtx, UsesProperty, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{AsUnit, LayoutSize, LenReq, Length, SizeDef};
 use crate::properties::Gap;
 use crate::util::debug_panic;
 
@@ -281,7 +280,7 @@ impl CollectionWidget<GridParams> for Grid {
     }
 }
 
-impl HasProperty<Gap> for Grid {}
+impl UsesProperty<Gap> for Grid {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Grid {
@@ -303,24 +302,21 @@ impl Widget for Grid {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        cross_length: Option<Length>,
+    ) -> Length {
+        let cache = ctx.property_cache();
+        let gap = props.get::<Gap>(cache);
 
-        let gap = props.get::<Gap>();
-
-        let gap_length = gap.gap.dp(scale);
+        let gap_length = gap.gap.get();
 
         let cross = axis.cross();
         let cross_track_cells = self.track_cells(cross) as f64;
         let cross_cell_length = cross_length
             .filter(|_| cross_track_cells > 0.) // Guard against div by zero
-            .map(|cross_length| (cross_length + gap_length) / cross_track_cells);
+            .map(|cross_length| (cross_length.get() + gap_length) / cross_track_cells);
 
         let (len_req, min_result) = match len_req {
-            LenReq::MinContent | LenReq::MaxContent => (len_req, 0.),
+            LenReq::MinContent | LenReq::MaxContent => (len_req, Length::ZERO),
             // We always want to use up all offered space but may need even more,
             // so we implement FitContent as space.max(MinContent).
             LenReq::FitContent(space) => (LenReq::MinContent, space),
@@ -336,7 +332,7 @@ impl Widget for Grid {
                     let length = cross_area_cells * cross_cell_length - gap_length;
                     // Guard against the derived area length becoming negative,
                     // which can happen if total space can't fit all cells and gaps.
-                    length.max(0.)
+                    length.max(0.).px()
                 });
 
                 let auto_length = len_req.into();
@@ -350,25 +346,22 @@ impl Widget for Grid {
                     cross_area_length,
                 );
 
-                (child_length + gap_length) / area_cells
+                (child_length.get() + gap_length) / area_cells
             };
             cell_length = cell_length.max(desired_cell_length);
         }
 
         let track_cells = self.track_cells(axis) as f64;
-        let length = track_cells * cell_length - gap_length;
+        let length = (track_cells * cell_length - gap_length).px();
 
         min_result.max(length)
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        let cache = ctx.property_cache();
+        let gap = props.get::<Gap>(cache);
 
-        let gap = props.get::<Gap>();
-
-        let gap_length = gap.gap.dp(scale);
+        let gap_length = gap.gap.get();
 
         let cell_width = (size.width + gap_length) / self.grid_column_count as f64;
         let cell_height = (size.height + gap_length) / self.grid_row_count as f64;
@@ -427,7 +420,13 @@ impl Widget for Grid {
         }
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -468,15 +467,12 @@ mod tests {
     #[test]
     fn test_grid_basics() {
         // Start with a 1x1 grid
-        let widget = NewWidget::new_with_props(
-            Grid::with_dimensions(1, 1).with(
-                Button::with_text("A").with_auto_id(),
-                GridParams::new(0, 0, 1, 1),
-            ),
-            Dimensions::STRETCH,
-        );
-        let window_size = Size::new(200.0, 200.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let widget = NewWidget::new(Grid::with_dimensions(1, 1).with(
+            Button::with_text("A").prepare(),
+            GridParams::new(0, 0, 1, 1),
+        ))
+        .with_props(Dimensions::STRETCH);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 200));
         // Snapshot with the single widget.
         assert_render_snapshot!(harness, "grid_initial_1x1");
 
@@ -495,7 +491,7 @@ mod tests {
         harness.edit_root_widget(|mut grid| {
             Grid::add(
                 &mut grid,
-                Button::with_text("B").with_auto_id(),
+                Button::with_text("B").prepare(),
                 GridParams::new(1, 0, 3, 1),
             );
         });
@@ -505,7 +501,7 @@ mod tests {
         harness.edit_root_widget(|mut grid| {
             Grid::add(
                 &mut grid,
-                Button::with_text("C").with_auto_id(),
+                Button::with_text("C").prepare(),
                 GridParams::new(0, 1, 1, 3),
             );
         });
@@ -515,7 +511,7 @@ mod tests {
         harness.edit_root_widget(|mut grid| {
             Grid::add(
                 &mut grid,
-                Button::with_text("D").with_auto_id(),
+                Button::with_text("D").prepare(),
                 GridParams::new(1, 1, 2, 2),
             );
         });
@@ -531,11 +527,10 @@ mod tests {
     #[test]
     fn test_widget_removal_and_modification() {
         let widget = NewWidget::new(Grid::with_dimensions(2, 2).with(
-            Button::with_text("A").with_auto_id(),
+            Button::with_text("A").prepare(),
             GridParams::new(0, 0, 1, 1),
         ));
-        let window_size = Size::new(200.0, 200.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 200));
         // Snapshot with the single widget.
         assert_render_snapshot!(harness, "grid_initial_2x2");
 
@@ -549,7 +544,7 @@ mod tests {
         harness.edit_root_widget(|mut grid| {
             Grid::add(
                 &mut grid,
-                Button::with_text("A").with_auto_id(),
+                Button::with_text("A").prepare(),
                 GridParams::new(0, 0, 1, 1),
             );
         });
@@ -560,7 +555,7 @@ mod tests {
             Grid::remove(&mut grid, 0);
             Grid::add(
                 &mut grid,
-                Button::with_text("X").with_auto_id(),
+                Button::with_text("X").prepare(),
                 GridParams::new(0, 0, 1, 1),
             );
         });
@@ -568,7 +563,7 @@ mod tests {
             Grid::set(
                 &mut grid,
                 0,
-                Button::with_text("A").with_auto_id(),
+                Button::with_text("A").prepare(),
                 GridParams::new(0, 0, 1, 1),
             );
         });
@@ -590,11 +585,10 @@ mod tests {
     #[test]
     fn test_widget_order() {
         let widget = NewWidget::new(Grid::with_dimensions(2, 2).with(
-            Button::with_text("A").with_auto_id(),
+            Button::with_text("A").prepare(),
             GridParams::new(0, 0, 1, 1),
         ));
-        let window_size = Size::new(200.0, 200.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 200));
         // Snapshot with the single widget.
         assert_render_snapshot!(harness, "grid_initial_2x2");
 
@@ -602,7 +596,7 @@ mod tests {
         harness.edit_root_widget(|mut grid| {
             Grid::add(
                 &mut grid,
-                Button::with_text("B").with_auto_id(),
+                Button::with_text("B").prepare(),
                 GridParams::new(0, 0, 1, 1),
             );
         });
@@ -614,7 +608,7 @@ mod tests {
             Grid::insert(
                 &mut grid,
                 0,
-                Button::with_text("C").with_auto_id(),
+                Button::with_text("C").prepare(),
                 GridParams::new(0, 0, 2, 1),
             );
         });
@@ -625,43 +619,44 @@ mod tests {
     fn grid_baselines() {
         let grid = Grid::with_dimensions(3, 3)
             .with(
-                Label::new("A\nB").with_props((
-                    Padding::from_vh(0., 0.),
+                Label::new("A\nB").prepare().with_props((
+                    Padding::from_vh(0.px(), 0.px()),
                     Background::Color(palette::css::ORANGE),
                 )),
                 GridParams::new(1, 0, 1, 1),
             )
             .with(
-                Label::new("C\nD").with_props((
-                    Padding::from_vh(8., 0.),
+                Label::new("C\nD").prepare().with_props((
+                    Padding::from_vh(8.px(), 0.px()),
                     Background::Color(palette::css::DARK_BLUE),
                 )),
                 GridParams::new(0, 0, 1, 2),
             )
             .with(
-                Label::new("E\nF").with_props((
-                    Padding::from_vh(16., 0.),
+                Label::new("E\nF").prepare().with_props((
+                    Padding::from_vh(16.px(), 0.px()),
                     Background::Color(palette::css::DARK_SALMON),
                 )),
                 GridParams::new(2, 0, 1, 3),
             )
             .with(
-                Label::new("G\nH").with_props((
-                    Padding::from_vh(24., 0.),
+                Label::new("G\nH").prepare().with_props((
+                    Padding::from_vh(24.px(), 0.px()),
                     Background::Color(palette::css::DARK_SLATE_BLUE),
                 )),
                 GridParams::new(1, 1, 1, 2),
             )
+            .prepare()
             .with_props(Dimensions::width(80.px()));
 
         let root = Flex::row()
             .cross_axis_alignment(CrossAxisAlignment::FirstBaseline)
-            .with_fixed(Label::new("Out").with_auto_id())
+            .with_fixed(Label::new("Out").prepare())
             .with_fixed(grid)
-            .with_props(Padding::all(10.));
+            .prepare()
+            .with_props(Padding::all(10.px()));
 
-        let window_size = Size::new(150.0, 200.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), root, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (150, 200));
 
         assert_render_snapshot!(harness, "grid_baselines_first");
 

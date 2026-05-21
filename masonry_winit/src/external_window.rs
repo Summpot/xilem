@@ -6,15 +6,17 @@ use std::sync::Arc;
 use bevy_window::RawHandleWrapper;
 use masonry_core::app::{RenderRootOptions, WindowSizePolicy};
 use masonry_core::core::DefaultProperties;
-use masonry_core::kurbo::Affine;
+use masonry_core::imaging::record::Scene;
 use masonry_core::peniko::Color;
-use masonry_core::vello::{
-    wgpu, AaConfig, AaSupport, Error, RenderParams, Renderer, RendererOptions, Scene,
+use masonry_imaging::PreparedFrame;
+use masonry_imaging::texture_render::{
+    RenderTarget as ImagingRenderTarget, Renderer as ImagingRenderer,
 };
+use wgpu::{self, PresentMode, SurfaceTexture};
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::window::Window as WinitWindow;
 
-use crate::vello_util::{RenderContext, RenderSurface};
+use crate::vello_util::{RenderContext, RenderSurface, RenderSurfaceError};
 
 /// Metrics captured from an externally owned winit window.
 #[derive(Debug, Clone, Copy)]
@@ -61,10 +63,10 @@ pub fn render_root_options_from_existing_window(
     }
 }
 
-/// A Vello surface context attached to an externally owned winit window.
+/// A Masonry rendering surface context attached to an externally owned winit window.
 ///
 /// This allows host frameworks (for example Bevy) to keep window/event-loop ownership,
-/// while Masonry/Vello initializes rendering resources against that existing window.
+/// while Masonry initializes rendering resources against that existing window.
 pub struct ExternalWindowSurface {
     render_cx: RenderContext,
     surface: RenderSurface<'static>,
@@ -72,12 +74,12 @@ pub struct ExternalWindowSurface {
 }
 
 impl ExternalWindowSurface {
-    /// Create an attached Vello surface for an existing window.
+    /// Create an attached Masonry surface for an existing window.
     pub fn new(
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         metrics: ExistingWindowMetrics,
-        present_mode: wgpu::PresentMode,
-    ) -> Result<Self, Error> {
+        present_mode: PresentMode,
+    ) -> Result<Self, RenderSurfaceError> {
         let mut render_cx = RenderContext::new();
         let surface = pollster::block_on(render_cx.create_surface(
             target,
@@ -97,8 +99,8 @@ impl ExternalWindowSurface {
     pub fn new_from_bevy_raw_handle(
         raw_handle: RawHandleWrapper,
         metrics: ExistingWindowMetrics,
-        present_mode: wgpu::PresentMode,
-    ) -> Result<Self, Error> {
+        present_mode: PresentMode,
+    ) -> Result<Self, RenderSurfaceError> {
         // SAFETY: The caller provides a `RawHandleWrapper` originating from Bevy's
         // `WindowWrapper`, which internally keeps an owning reference to the window alive.
         // We create a thread-locked handle target only for surface initialization.
@@ -138,79 +140,41 @@ impl ExternalWindowSurface {
         metrics
     }
 
-    /// Render a Masonry/Vello scene and present it to the attached window surface.
+    /// Render a Masonry scene and present it to the attached window surface.
     pub fn render_scene(
         &mut self,
-        renderer: &mut Option<Renderer>,
+        renderer: &mut ImagingRenderer,
         scene: Scene,
         logical_width: u32,
         logical_height: u32,
         base_color: Color,
     ) {
-        let transformed_scene = if self.scale_factor == 1.0 {
-            None
-        } else {
-            let mut scaled = Scene::new();
-            scaled.append(&scene, Some(Affine::scale(self.scale_factor)));
-            Some(scaled)
+        let Some(surface_texture) = self.acquire_surface_texture() else {
+            return;
         };
-        let scene_ref = transformed_scene.as_ref().unwrap_or(&scene);
 
         let dev_id = self.surface.dev_id;
         let device = &self.render_cx.devices[dev_id].device;
         let queue = &self.render_cx.devices[dev_id].queue;
 
-        let renderer = renderer.get_or_insert_with(|| {
-            Renderer::new(
-                device,
-                RendererOptions {
-                    antialiasing_support: AaSupport::area_only(),
-                    ..Default::default()
-                },
-            )
-            .expect("failed to create Vello renderer")
-        });
-
-        let render_params = RenderParams {
+        let overlays = [];
+        let frame = PreparedFrame::new(
+            logical_width.max(1),
+            logical_height.max(1),
+            self.scale_factor,
             base_color,
-            width: logical_width.max(1),
-            height: logical_height.max(1),
-            antialiasing_method: AaConfig::Area,
-        };
-
-        let surface_texture = match self.surface.surface.get_current_texture() {
-            Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Outdated) => {
-                let current_width = self.surface.config.width.max(1);
-                let current_height = self.surface.config.height.max(1);
-                self.render_cx.resize_surface(
-                    &mut self.surface,
-                    current_width,
-                    current_height,
-                );
-
-                match self.surface.surface.get_current_texture() {
-                    Ok(texture) => texture,
-                    Err(err) => {
-                        tracing::error!(
-                            "Couldn't get swap chain texture after configuring. Cause: '{err}'"
-                        );
-                        return;
-                    }
-                }
-            }
-            Err(err) => {
-                tracing::error!("Couldn't get swap chain texture, operation unrecoverable: {err}");
-                return;
-            }
-        };
-
+            &scene,
+            &overlays,
+        );
         if let Err(err) = renderer.render_to_texture(
-            device,
-            queue,
-            scene_ref,
-            &self.surface.target_view,
-            &render_params,
+            ImagingRenderTarget {
+                adapter: &self.render_cx.devices[dev_id].adapter,
+                device,
+                queue,
+                texture: &self.surface.target_texture,
+                view: &self.surface.target_view,
+            },
+            frame,
         ) {
             tracing::error!("failed to render scene to texture: {err}");
             return;
@@ -232,6 +196,32 @@ impl ExternalWindowSurface {
 
         if let Err(err) = device.poll(wgpu::PollType::wait_indefinitely()) {
             tracing::error!("error while waiting for GPU completion: {err}");
+        }
+    }
+
+    fn acquire_surface_texture(&mut self) -> Option<SurfaceTexture> {
+        match self.surface.surface.get_current_texture() {
+            Ok(texture) => Some(texture),
+            Err(wgpu::SurfaceError::Outdated) => {
+                let current_width = self.surface.config.width.max(1);
+                let current_height = self.surface.config.height.max(1);
+                self.render_cx
+                    .resize_surface(&mut self.surface, current_width, current_height);
+
+                match self.surface.surface.get_current_texture() {
+                    Ok(texture) => Some(texture),
+                    Err(err) => {
+                        tracing::error!(
+                            "Couldn't get swap chain texture after configuring. Cause: '{err}'"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::error!("Couldn't get swap chain texture, operation unrecoverable: {err}");
+                None
+            }
         }
     }
 }

@@ -6,23 +6,21 @@ use std::any::TypeId;
 use accesskit::{Node, Role, Toggled};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace, trace_span};
-use vello::Scene;
 
 use crate::core::keyboard::Key;
 use crate::core::{
-    AccessCtx, AccessEvent, ArcStr, ChildrenIds, EventCtx, HasProperty, LayoutCtx, MeasureCtx,
-    NewWidget, PaintCtx, PointerEvent, PrePaintProps, PropertiesMut, PropertiesRef, Property,
-    RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
+    AccessCtx, AccessEvent, ArcStr, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, NewWidget,
+    PaintCtx, PointerEvent, PrePaintProps, PropertiesMut, PropertiesRef, Property, RegisterCtx,
+    TextEvent, Update, UpdateCtx, UsesProperty, Widget, WidgetId, WidgetMut, WidgetPod,
     paint_background, paint_box_shadow,
 };
-use crate::kurbo::{Affine, Axis, BezPath, Cap, Dashes, Join, Point, Size, Stroke};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, BezPath, Cap, Dashes, Join, Point, Size, Stroke};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
 use crate::properties::{
     BorderColor, BorderWidth, CheckmarkColor, CheckmarkStrokeWidth, CornerRadius,
-    DisabledCheckmarkColor, FocusedBorderColor, HoveredBorderColor,
 };
 use crate::theme;
-use crate::util::stroke;
 use crate::widgets::Label;
 
 /// A checkbox that can be toggled.
@@ -87,9 +85,8 @@ impl Checkbox {
     }
 }
 
-impl HasProperty<CheckmarkStrokeWidth> for Checkbox {}
-impl HasProperty<DisabledCheckmarkColor> for Checkbox {}
-impl HasProperty<CheckmarkColor> for Checkbox {}
+impl UsesProperty<CheckmarkStrokeWidth> for Checkbox {}
+impl UsesProperty<CheckmarkColor> for Checkbox {}
 
 /// The action type emitted by [`Checkbox`] when it is activated.
 ///
@@ -112,11 +109,9 @@ impl Widget for Checkbox {
                 ctx.capture_pointer();
                 trace!("Checkbox {:?} pressed", ctx.widget_id());
             }
-            PointerEvent::Up { .. } => {
-                if ctx.is_active() && ctx.is_hovered() {
-                    ctx.submit_action::<Self::Action>(CheckboxToggled(!self.checked));
-                    trace!("Checkbox {:?} released", ctx.widget_id());
-                }
+            PointerEvent::Up { .. } if ctx.is_active() && ctx.is_hovered() => {
+                ctx.submit_action::<Self::Action>(CheckboxToggled(!self.checked));
+                trace!("Checkbox {:?} released", ctx.widget_id());
             }
             _ => (),
         }
@@ -179,10 +174,7 @@ impl Widget for Checkbox {
         }
         if CornerRadius::matches(property_type)
             || BorderColor::matches(property_type)
-            || FocusedBorderColor::matches(property_type)
-            || HoveredBorderColor::matches(property_type)
             || CheckmarkStrokeWidth::matches(property_type)
-            || DisabledCheckmarkColor::matches(property_type)
             || CheckmarkColor::matches(property_type)
         {
             ctx.request_paint_only();
@@ -195,25 +187,21 @@ impl Widget for Checkbox {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let check_side = theme::BASIC_WIDGET_HEIGHT.dp(scale);
-        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING.dp(scale);
+        cross_length: Option<Length>,
+    ) -> Length {
+        let check_side = theme::BASIC_WIDGET_HEIGHT;
+        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING;
 
         let calc_other_length = |axis| match axis {
-            Axis::Horizontal => check_side + check_padding,
-            Axis::Vertical => 0.,
+            Axis::Horizontal => check_side.saturating_add(check_padding),
+            Axis::Vertical => Length::ZERO,
         };
         let other_length = calc_other_length(axis);
 
         let cross = axis.cross();
         let cross_space = cross_length.map(|cross_length| {
             let cross_other_length = calc_other_length(cross);
-            (cross_length - cross_other_length).max(0.)
+            cross_length.saturating_sub(cross_other_length)
         });
 
         let auto_length = len_req.reduce(other_length).into();
@@ -228,18 +216,14 @@ impl Widget for Checkbox {
         );
 
         match axis {
-            Axis::Horizontal => label_length + other_length,
-            Axis::Vertical => label_length.max(check_side) + other_length,
+            Axis::Horizontal => label_length.saturating_add(other_length),
+            Axis::Vertical => label_length.max(check_side).saturating_add(other_length),
         }
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let check_side = theme::BASIC_WIDGET_HEIGHT.dp(scale);
-        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING.dp(scale);
+        let check_side = theme::BASIC_WIDGET_HEIGHT.get();
+        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING.get();
 
         let space = Size::new(
             (size.width - (check_side + check_padding)).max(0.),
@@ -255,12 +239,18 @@ impl Widget for Checkbox {
         ctx.derive_baselines(&self.label);
     }
 
-    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn pre_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let bbox = ctx.border_box();
-        let p = PrePaintProps::fetch(ctx, props);
+        let cache = ctx.property_cache();
+        let p = PrePaintProps::fetch(props, cache);
 
-        paint_box_shadow(scene, bbox, p.box_shadow, p.corner_radius);
-        paint_background(scene, bbox, p.background, p.border_width, p.corner_radius);
+        paint_box_shadow(painter, bbox, p.box_shadow, p.corner_radius);
+        paint_background(painter, bbox, p.background, p.border_width, p.corner_radius);
 
         // Paint focus indicator around the entire widget (box + label)
         if ctx.is_focus_target() || ctx.is_hovered() {
@@ -282,55 +272,40 @@ impl Widget for Checkbox {
                 dash_offset: 0.0,
             };
             let focus_path = focus_rect.to_rounded_rect(focus_radius);
-            scene.stroke(
-                &focus_stroke,
-                Affine::IDENTITY,
-                focus_color,
-                None,
-                &focus_path,
-            );
+            painter
+                .stroke(focus_path, &focus_stroke, focus_color)
+                .draw();
         }
         // Skip painting the regular border while the check border uses that property
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let is_focused = ctx.is_focus_target();
-        let is_hovered = ctx.is_hovered();
-
-        let check_side = theme::BASIC_WIDGET_HEIGHT.dp(scale);
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let check_side = theme::BASIC_WIDGET_HEIGHT.get();
         let check_size = Size::new(check_side, check_side);
 
-        let border_width = props.get::<BorderWidth>();
-        let border_radius = props.get::<CornerRadius>();
+        let cache = ctx.property_cache();
+        let border_width = *props.get::<BorderWidth>(cache);
+        let border_radius = *props.get::<CornerRadius>(cache);
 
-        let border_rect = border_width.border_rect(check_size.to_rect(), border_radius);
+        let border_rect = border_width.border_rect(check_size.to_rect(), &border_radius);
 
-        let border_color = if is_focused && let Some(fb) = props.get_defined::<FocusedBorderColor>()
-        {
-            &fb.0
-        } else if is_hovered && let Some(hb) = props.get_defined::<HoveredBorderColor>() {
-            &hb.0
-        } else {
-            props.get::<BorderColor>()
-        };
+        let border_color = *props.get::<BorderColor>(cache);
 
         // Paint the checkbox box border
-        stroke(scene, &border_rect, border_color.color, border_width.width);
+        let border_stroke = Stroke::new(border_width.width.get()).with_join(Join::Miter);
+        painter
+            .stroke(border_rect, &border_stroke, border_color.color)
+            .draw();
 
         // Paint the checkmark if checked
         if self.checked {
-            let checkmark_width = props.get::<CheckmarkStrokeWidth>();
-            let brush = if ctx.is_disabled()
-                && let Some(dc) = props.get_defined::<DisabledCheckmarkColor>()
-            {
-                &dc.0
-            } else {
-                props.get::<CheckmarkColor>()
-            };
+            let checkmark_width = *props.get::<CheckmarkStrokeWidth>(cache);
+            let brush = *props.get::<CheckmarkColor>(cache);
 
             let mut path = BezPath::new();
             path.move_to((4.0, 9.0));
@@ -346,7 +321,7 @@ impl Widget for Checkbox {
                 dash_pattern: Dashes::default(),
                 dash_offset: 0.0,
             };
-            scene.stroke(&style, Affine::IDENTITY, brush.color, None, &path);
+            painter.stroke(path, &style, brush.color).draw();
         }
     }
 
@@ -390,8 +365,9 @@ impl Widget for Checkbox {
 mod tests {
     use super::*;
     use crate::core::{PropertySet, StyleProperty};
-    use crate::properties::ContentColor;
-    use crate::testing::{TestHarness, assert_render_snapshot};
+    use crate::layout::AsUnit;
+    use crate::properties::{ContentColor, Padding};
+    use crate::testing::{TestHarness, TestHarnessParams, assert_render_snapshot};
     use crate::theme::{ACCENT_COLOR, test_property_set};
     use crate::widgets::Flex;
 
@@ -399,15 +375,14 @@ mod tests {
     fn simple_checkbox() {
         let widget = NewWidget::new(Checkbox::new(false, "Hello"));
 
-        let window_size = Size::new(100.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 40));
         let checkbox_id = harness.root_id();
 
         assert_render_snapshot!(harness, "checkbox_hello_unchecked");
 
         assert!(harness.pop_action_erased().is_none());
 
-        harness.mouse_click_on(checkbox_id);
+        harness.mouse_click_on(checkbox_id, None);
         assert_eq!(
             harness.pop_action::<CheckboxToggled>(),
             Some((CheckboxToggled(true), checkbox_id))
@@ -443,25 +418,36 @@ mod tests {
                 .with_fixed(checkbox)
                 .main_axis_alignment(MainAxisAlignment::Center),
         );
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), root, Size::new(120.0, 40.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (120, 40));
 
         harness.focus_on(Some(checkbox_id));
         assert_render_snapshot!(harness, "checkbox_focus_focused");
     }
+
+    #[test]
+    fn checkbox_with_padding() {
+        let checkbox = NewWidget::new(Checkbox::new(true, "Padding"))
+            .with_props(Padding::from_vh(8.px(), 16.px()));
+        let checkbox_id = checkbox.id();
+        let params =
+            TestHarnessParams::size_and_padding((180, 72), TestHarnessParams::ROOT_PADDING);
+        let mut harness = TestHarness::create_with(test_property_set(), checkbox, params);
+
+        harness.focus_on(Some(checkbox_id));
+        assert_render_snapshot!(harness, "checkbox_with_padding_focused");
+    }
+
     #[test]
     fn edit_checkbox() {
         let image_1 = {
             let label = Label::new("The quick brown fox jumps over the lazy dog")
                 .with_style(StyleProperty::FontSize(20.0));
-            let label = NewWidget::new_with_props(
-                label,
-                PropertySet::new().with(ContentColor::new(ACCENT_COLOR)),
-            );
+            let label = NewWidget::new(label)
+                .with_props(PropertySet::new().with(ContentColor::new(ACCENT_COLOR)));
             let checkbox = NewWidget::new(Checkbox::from_label(true, label));
 
             let mut harness =
-                TestHarness::create_with_size(test_property_set(), checkbox, Size::new(50.0, 50.0));
+                TestHarness::create_with_size(test_property_set(), checkbox, (50, 50));
 
             harness.render()
         };
@@ -470,7 +456,7 @@ mod tests {
             let checkbox = NewWidget::new(Checkbox::new(false, "Hello world"));
 
             let mut harness =
-                TestHarness::create_with_size(test_property_set(), checkbox, Size::new(50.0, 50.0));
+                TestHarness::create_with_size(test_property_set(), checkbox, (50, 50));
 
             harness.edit_root_widget(|mut checkbox| {
                 Checkbox::set_checked(&mut checkbox, true);

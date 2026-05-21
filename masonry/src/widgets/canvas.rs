@@ -3,12 +3,12 @@
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ArcStr, ChildrenIds, LayoutCtx, MeasureCtx, MutateCtx, PaintCtx, PropertiesRef,
     RegisterCtx, Widget, WidgetId, WidgetMut,
 };
+use crate::imaging::{Painter, record::Scene};
 use crate::kurbo::{Axis, Size};
 use crate::layout::{LenReq, Length};
 
@@ -18,8 +18,8 @@ const DEFAULT_LENGTH: Length = Length::const_px(100.);
 /// A widget allowing custom drawing.
 ///
 /// A canvas takes a painter callback; every time the canvas is repainted, that callback
-/// in run with a [`Scene`].
-/// That Scene is then used as the canvas' contents.
+/// is run with an `imaging` [`record::Scene`](Scene).
+/// That recording is then replayed as the canvas contents.
 #[derive(Default)]
 pub struct Canvas {
     alt_text: Option<ArcStr>,
@@ -59,7 +59,7 @@ impl Canvas {
         this: &mut WidgetMut<'_, Self>,
         f: impl FnOnce(&mut MutateCtx<'_>, &mut Scene, Size),
     ) {
-        this.widget.scene.reset();
+        this.widget.scene.clear();
         f(&mut this.ctx, &mut this.widget.scene, this.widget.size);
         this.ctx.request_render();
     }
@@ -92,16 +92,12 @@ impl Widget for Canvas {
         _props: &PropertiesRef<'_>,
         _axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+        _cross_length: Option<Length>,
+    ) -> Length {
         // We use all the available space or fall back to our const preferred size.
         match len_req {
             LenReq::FitContent(space) => space,
-            _ => DEFAULT_LENGTH.dp(scale),
+            _ => DEFAULT_LENGTH,
         }
     }
 
@@ -114,8 +110,13 @@ impl Widget for Canvas {
         ctx.set_clip_path(size.to_rect());
     }
 
-    fn paint(&mut self, _: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
-        scene.append(&self.scene, None);
+    fn paint(
+        &mut self,
+        _: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        painter.replay(&self.scene);
     }
 
     fn accessibility_role(&self) -> Role {
@@ -155,9 +156,9 @@ mod tests {
     use crate::core::{DefaultProperties, PropertySet, render_text};
     use crate::kurbo::{Affine, BezPath, Stroke};
     use crate::parley::{
-        Alignment, AlignmentOptions, FontFamily, FontStack, GenericFamily, StyleProperty,
+        Alignment, AlignmentOptions, FontFamily, FontFamilyName, GenericFamily, StyleProperty,
     };
-    use crate::peniko::{Color, Fill};
+    use crate::peniko::Color;
     use crate::testing::{TestHarness, TestHarnessParams};
 
     #[test]
@@ -167,11 +168,12 @@ mod tests {
 
         let mut harness = TestHarness::create(
             DefaultProperties::default(),
-            canvas.with_props(PropertySet::default()),
+            canvas.prepare().with_props(PropertySet::default()),
         );
 
         harness.edit_root_widget(|mut canvas| {
             Canvas::update_scene(&mut canvas, |_ctx, scene, size| {
+                let mut painter = Painter::new(scene);
                 let scale = Affine::scale_non_uniform(size.width, size.height);
                 let mut path = BezPath::new();
                 path.move_to((0.1, 0.1));
@@ -179,20 +181,10 @@ mod tests {
                 path.line_to((0.9, 0.1));
                 path.close_path();
                 path = scale * path;
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    Color::from_rgb8(100, 240, 150),
-                    None,
-                    &path,
-                );
-                scene.stroke(
-                    &Stroke::new(4.),
-                    Affine::IDENTITY,
-                    Color::from_rgb8(200, 140, 50),
-                    None,
-                    &path,
-                );
+                painter.fill(&path, Color::from_rgb8(100, 240, 150)).draw();
+                painter
+                    .stroke(&path, &Stroke::new(4.), Color::from_rgb8(200, 140, 50))
+                    .draw();
             });
         });
 
@@ -204,20 +196,20 @@ mod tests {
         let canvas =
             Canvas::default().with_alt_text("The text 'Canvas' with a bright mint green fill");
 
-        let mut harness_params = TestHarnessParams::DEFAULT;
-        harness_params.window_size = Size::new(200., 200.);
+        let harness_params = TestHarnessParams::default().with_size((200, 200));
         let mut harness = TestHarness::create_with(
             DefaultProperties::default(),
-            canvas.with_props(PropertySet::default()),
+            canvas.prepare().with_props(PropertySet::default()),
             harness_params,
         );
 
         harness.edit_root_widget(|mut canvas| {
             Canvas::update_scene(&mut canvas, |ctx, scene, size| {
+                let mut painter = Painter::new(scene);
                 let (fcx, lcx) = ctx.text_contexts();
                 let mut text_layout_builder = lcx.ranged_builder(fcx, "Canvas", 1., true);
-                text_layout_builder.push_default(StyleProperty::FontStack(FontStack::Single(
-                    FontFamily::Generic(GenericFamily::Serif),
+                text_layout_builder.push_default(StyleProperty::FontFamily(FontFamily::Single(
+                    FontFamilyName::Generic(GenericFamily::Serif),
                 )));
                 text_layout_builder.push_default(StyleProperty::FontSize(size.height as f32));
                 let mut text_layout = text_layout_builder.build("Canvas");
@@ -228,7 +220,7 @@ mod tests {
                     size.height / text_layout.height() as f64,
                 );
                 render_text(
-                    scene,
+                    &mut painter,
                     scale,
                     &text_layout,
                     &[Color::from_rgb8(100, 240, 150).into()],

@@ -13,8 +13,7 @@
 //! Xilem is implemented as a reactive layer on top of [Masonry][masonry], a widget toolkit which is developed alongside Xilem.
 //! Masonry itself is built on top of a wide array of foundational Rust UI projects:
 //!
-//! * Rendering is provided by [Vello], a high performance GPU compute-centric 2D renderer.
-//! * GPU compute infrastructure is provided by [wgpu].
+//! * Rendering is provided by [Imaging][imaging], an interface to multiple high performance 2D renderers.
 //! * Text layout is provided by [Parley].
 //! * Accessibility is provided by [AccessKit][] ([docs][accesskit_docs]).
 //! * Window handling is provided by [Winit][].
@@ -117,9 +116,8 @@
 //!
 //! [accesskit_docs]: masonry::accesskit
 //! [Parley]: masonry::parley
-//! [Vello]: masonry::vello
+//! [imaging]: masonry::imaging
 //! [winit]: masonry_winit::winit
-//! [wgpu]: masonry::vello::wgpu
 //!
 //! [AccessKit]: https://accesskit.dev/
 //! [Druid]: https://crates.io/crates/druid
@@ -154,8 +152,8 @@
 pub use masonry;
 pub use masonry::dpi;
 pub use masonry::palette;
+pub use masonry::{kurbo, peniko};
 pub use tokio;
-pub use vello;
 pub use winit;
 pub use xilem_core as core;
 pub use xilem_masonry::style;
@@ -183,3 +181,6 @@ pub use window_view::{PodWindow, WindowView, window};
 
 #[cfg(windows)]
 pub use window_options::WindowOptionsExtWindows;
+
+#[cfg(target_os = "macos")]
+pub use window_options::WindowOptionsExtMacOS;

@@ -12,8 +12,6 @@
 
 </div>
 
-**TODO - Add screenshots - see [#501](https://github.com/linebender/xilem/issues/501)**
-
 If you're building your own GUI framework on top of Masonry, or even a GUI app with specific needs, you'll want to specify your own widgets.
 
 This tutorial explains how to create a simple leaf widget.
@@ -34,10 +32,10 @@ trait Widget {
     fn on_anim_frame(&mut self, ctx: &mut UpdateCtx<'_>, props: &mut PropertiesMut<'_>, interval: u64);
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, props: &mut PropertiesMut<'_>, event: &Update);
 
-    fn measure(&mut self, ctx: &mut MeasureCtx<'_>, props: &PropertiesRef<'_>, axis: Axis, len_req: LenReq, cross_length: Option<f64>) -> f64;
+    fn measure(&mut self, ctx: &mut MeasureCtx<'_>, props: &PropertiesRef<'_>, axis: Axis, len_req: LenReq, cross_length: Option<Length>) -> Length;
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size);
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene);
+    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, painter: &mut Painter<'_>);
     fn accessibility_role(&self) -> Role;
     fn accessibility(&mut self, ctx: &mut AccessCtx<'_>, props: &PropertiesRef<'_>, node: &mut Node);
 
@@ -60,6 +58,8 @@ In the course of a frame, Masonry will run a series of passes over the widget tr
 
 Let's implement a very simple widget named `ColorRectangle`.
 This widget has a size, a color, and will notify Masonry when the user left-clicks on it (on mouse press; we'll ignore mouse release).
+
+![Screenshot of the rectangle widget][color-rectangle-screenshot]
 
 First, let's create our struct:
 
@@ -88,9 +88,7 @@ First we implement event methods:
 
 ```rust,ignore
 // ...
-use masonry::core::{
-    AccessEvent, EventCtx, PointerButton, PointerEvent, PropertiesMut, TextEvent, Widget
-};
+use masonry::core::{AccessEvent, EventCtx, PointerEvent, PropertiesMut, TextEvent, Widget};
 // ...
 
 #[derive(Debug)]
@@ -101,7 +99,7 @@ impl Widget for ColorRectangle {
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
-            PointerEvent::Down { button: Some(PointerButton::Primary), .. } => {
+            PointerEvent::Down(_) => {
                 ctx.submit_action::<Self::Action>(ColorRectanglePress);
             }
             _ => {},
@@ -123,7 +121,7 @@ impl Widget for ColorRectangle {
 }
 ```
 
-We handle pointer events and accessibility events the same way: we check the event type, and if it's a left-click, we submit an action.
+We handle pointer events and accessibility events the same way: we check the event type, and if it's a click, we submit an action.
 
 Submitting an action lets Masonry know that a semantically meaningful event has occurred; Masonry will call `AppDriver::on_action()` with the action before the end of the frame.
 This lets higher-level frameworks like Xilem react to UI events - in this case, the color rectangle being pressed.
@@ -171,7 +169,7 @@ Next we implement layout:
 ```rust,ignore
 use masonry::core::{LayoutCtx, MeasureCtx, PropertiesRef};
 use masonry::kurbo::{Axis, Size};
-use masonry::layout::LenReq;
+use masonry::layout::{Length, LenReq};
 
 impl Widget for ColorRectangle {
     // ...
@@ -182,16 +180,13 @@ impl Widget for ColorRectangle {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        _cross_length: Option<Length>,
+    ) -> Length {
 
         match len_req {
             LenReq::MinContent | LenReq::MaxContent => match axis {
-                Axis::Horizontal => 200. * scale,
-                Axis::Vertical => 100. * scale,
+                Axis::Horizontal => 200.px(),
+                Axis::Vertical => 100.px(),
             }
             LenReq::FitContent(space) => space,
         }
@@ -217,23 +212,20 @@ Next we write our render methods:
 // ...
 use masonry::accesskit::{Node, Role};
 use masonry::core::{AccessCtx, PaintCtx, PropertiesRef};
-use masonry::kurbo::Affine;
-use masonry::peniko::Fill;
-use masonry::vello::Scene;
+use masonry::imaging::Painter;
 // ...
 
 impl Widget for ColorRectangle {
     // ...
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let rect = ctx.content_box();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            self.color,
-            Some(Affine::IDENTITY),
-            &rect,
-        );
+        painter.fill(rect, self.color).draw();
     }
 
     fn accessibility_role(&self) -> Role {
@@ -253,7 +245,7 @@ impl Widget for ColorRectangle {
 }
 ```
 
-In our `paint` method, we're given a [`vello::Scene`] and paint a rectangle into it.
+In our `paint` method, we're given a [`Painter`](crate::imaging::Painter) and paint a rectangle into it.
 
 We use `ctx.content_box()` to get a rectangle that precisely covers the content area of our widget.
 
@@ -360,7 +352,7 @@ Most context types include these methods for requesting future passes:
 
 ### Using context in `ColorRectangle`
 
-To show how context types are used in practice, let's add a feature to `ColorRectangle`: the widget will now be painted in white when hovered.
+To show how context types are used in practice, let's add a feature to `ColorRectangle`: the widget will now be painted in light-gray when hovered.
 
 First, we update our paint method:
 
@@ -368,20 +360,19 @@ First, we update our paint method:
 impl Widget for ColorRectangle {
     // ...
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let rect = ctx.content_box();
         let color = if ctx.is_hovered() {
-            Color::WHITE
+            Color::from_rgb8(0xD2, 0xD2, 0xD2)
         } else {
             self.color
         };
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            color,
-            Some(Affine::IDENTITY),
-            &rect,
-        );
+        painter.fill(rect, color).draw();
     }
 
     // ...
@@ -483,7 +474,7 @@ The next one is about creating a container widgets, and the complications it add
 [`Widget`]: crate::core::Widget
 [`WidgetMut`]: crate::core::WidgetMut
 [`PaintCtx::content_box()`]: crate::core::PaintCtx::content_box
-[`vello::Scene`]: vello::Scene
+[`Painter`]: crate::imaging::Painter
 [`Role::Button`]: accesskit::Role::Button
 [`RenderRoot::edit_base_layer()`]: crate::app::RenderRoot::edit_base_layer
 [`RenderRoot::edit_layer()`]: crate::app::RenderRoot::edit_layer

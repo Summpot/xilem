@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::TypeId;
+use std::fmt::Debug;
 
 use crate::core::{FromDynWidget, MutateCtx, Property, Widget, WidgetId};
 use crate::kurbo::Affine;
@@ -44,6 +45,15 @@ impl<W: Widget + ?Sized> Drop for WidgetMut<'_, W> {
     }
 }
 
+impl<W: Widget + ?Sized> Debug for WidgetMut<'_, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WidgetMut")
+            .field("widget", &self.widget.short_type_name())
+            .field("id", &self.ctx.widget_state.id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<W: Widget + ?Sized> WidgetMut<'_, W> {
     /// Returns the [`WidgetId`] of the current widget.
     pub fn id(&self) -> WidgetId {
@@ -66,30 +76,15 @@ impl<W: Widget + ?Sized> WidgetMut<'_, W> {
         self.ctx.properties.contains::<T>()
     }
 
-    /// Whether the property `P` of this widget has been modified in this pass.
-    ///
-    /// This is useful when composing units which might mutate a property value.
-    /// In these cases, the "strongest" of these will want to check if it has been
-    /// changed by a different unit, to overwrite this change.
-    pub fn prop_has_changed<P: Property>(&self) -> bool {
-        self.ctx.changed_properties.contains(&TypeId::of::<P>())
-    }
-
     /// Returns the value of property `T`.
     ///
     /// If the widget has an entry for `P`, returns that entry.
     /// If the default property set has an entry for `P`, returns that entry.
     /// Otherwise returns [`Property::static_default()`].
-    pub fn get_prop<T: Property>(&self) -> &T {
-        self.ctx.properties.get::<T>()
-    }
-
-    /// Returns the defined value of property `P`.
-    ///
-    /// If the widget has an explicit entry, or the default property map has an explicit entry,
-    /// then this will return a value. Otherwise it will return `None`.
-    pub fn get_prop_defined<P: Property>(&self) -> Option<&P> {
-        self.ctx.properties.get_defined::<P>()
+    pub fn get_prop<T: Property>(&mut self) -> &T {
+        self.ctx
+            .properties
+            .get::<T>(&mut self.ctx.widget_state.property_cache)
     }
 
     /// Sets property `T` to given value. Returns the previous value if `T` was already set locally.
@@ -98,7 +93,6 @@ impl<W: Widget + ?Sized> WidgetMut<'_, W> {
     ///
     /// This also calls [`Widget::property_changed`] with the matching type id.
     pub fn insert_prop<P: Property>(&mut self, value: P) -> Option<P> {
-        self.ctx.changed_properties.insert(TypeId::of::<P>());
         let value = self.ctx.properties.insert(value);
         let mut ctx = self.ctx.update_mut();
         let property_type = TypeId::of::<P>();
@@ -113,7 +107,6 @@ impl<W: Widget + ?Sized> WidgetMut<'_, W> {
     ///
     /// This also calls [`Widget::property_changed`] with the matching type id.
     pub fn remove_prop<P: Property>(&mut self) -> Option<P> {
-        self.ctx.changed_properties.insert(TypeId::of::<P>());
         let value = self.ctx.properties.remove::<P>();
         let mut ctx = self.ctx.update_mut();
         let property_type = TypeId::of::<P>();

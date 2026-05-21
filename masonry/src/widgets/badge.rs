@@ -6,18 +6,16 @@ use std::sync::Arc;
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx, PropertiesMut,
-    PropertiesRef, PropertySet, RegisterCtx, StyleProperty, Update, UpdateCtx, Widget, WidgetId,
-    WidgetMut, WidgetPod,
+    PropertiesRef, RegisterCtx, StyleProperty, Update, UpdateCtx, Widget, WidgetId, WidgetMut,
+    WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Size};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
 use crate::parley::style::FontWeight;
-use crate::properties::{ContentColor, DisabledContentColor};
-use crate::theme::{DISABLED_TEXT_COLOR, TEXT_COLOR};
 use crate::widgets::Label;
 
 /// A non-interactive badge (pill) widget that hosts a single child.
@@ -38,12 +36,11 @@ use crate::widgets::Label;
 /// use masonry::core::Widget;
 /// use masonry::widgets::{Badge, Label};
 ///
-/// let badge = Badge::new(Label::new("New").with_auto_id());
+/// let badge = Badge::new(Label::new("New").prepare());
 /// ```
 ///
 /// [`Background`]: crate::properties::Background
 /// [`CornerRadius`]: crate::properties::CornerRadius
-/// [`DisabledBackground`]: crate::properties::DisabledBackground
 pub struct Badge {
     child: WidgetPod<dyn Widget>,
 }
@@ -95,11 +92,7 @@ impl Badge {
         let label = Label::new(text)
             .with_style(StyleProperty::FontSize(12.0))
             .with_style(StyleProperty::FontWeight(FontWeight::BOLD))
-            .with_props(
-                PropertySet::new()
-                    .with(ContentColor::new(TEXT_COLOR))
-                    .with(DisabledContentColor(ContentColor::new(DISABLED_TEXT_COLOR))),
-            );
+            .prepare();
 
         Self::new(label)
     }
@@ -172,8 +165,8 @@ impl Widget for Badge {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -196,7 +189,13 @@ impl Widget for Badge {
         ctx.derive_baselines(&self.child);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -228,24 +227,23 @@ mod tests {
     use crate::theme::test_property_set;
     use crate::widgets::Label;
 
+    const ROOT_PADDING: u32 = TestHarnessParams::ROOT_PADDING;
+
     #[test]
     fn badge_is_non_interactive() {
-        let widget = Badge::new(Label::new("New").with_auto_id()).with_auto_id();
-        let window_size = Size::new(80.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let widget = Badge::new(Label::new("New").prepare()).prepare();
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (80, 40));
         let badge_id = harness.root_id();
 
-        harness.mouse_click_on(badge_id);
+        harness.mouse_click_on(badge_id, None);
         assert!(harness.pop_action_erased().is_none());
         assert!(harness.focused_widget().is_none());
     }
 
     #[test]
     fn badge_with_text() {
-        let widget = Badge::with_text("New").with_auto_id();
-        let mut params = TestHarnessParams::DEFAULT;
-        params.window_size = Size::new(120.0, 60.0);
-        params.root_padding = TestHarnessParams::ROOT_PADDING;
+        let widget = Badge::with_text("New").prepare();
+        let params = TestHarnessParams::size_and_padding((120, 60), ROOT_PADDING);
         let mut harness = TestHarness::create_with(test_property_set(), widget, params);
 
         assert_render_snapshot!(harness, "badge_with_text");
@@ -253,10 +251,8 @@ mod tests {
 
     #[test]
     fn badge_count_overflow() {
-        let widget = Badge::count(120).with_auto_id();
-        let mut params = TestHarnessParams::DEFAULT;
-        params.window_size = Size::new(120.0, 60.0);
-        params.root_padding = TestHarnessParams::ROOT_PADDING;
+        let widget = Badge::count(120).prepare();
+        let params = TestHarnessParams::size_and_padding((120, 60), ROOT_PADDING);
         let mut harness = TestHarness::create_with(test_property_set(), widget, params);
 
         assert_render_snapshot!(harness, "badge_count_overflow");

@@ -6,14 +6,14 @@ use std::any::TypeId;
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ChildrenIds, CollectionWidget, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx,
     PropertiesRef, RegisterCtx, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
 
 // TODO - Rename "active" widget to "visible" widget?
 // Active already means something else.
@@ -231,8 +231,8 @@ impl Widget for IndexedStack {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         if !self.children.is_empty() {
             let auto_length = len_req.into();
             let context_size = LayoutSize::maybe(axis.cross(), cross_length);
@@ -245,7 +245,7 @@ impl Widget for IndexedStack {
                 cross_length,
             )
         } else {
-            0.
+            Length::ZERO
         }
     }
 
@@ -273,7 +273,13 @@ impl Widget for IndexedStack {
         ctx.derive_baselines(&self.children[self.active_child]);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -307,16 +313,17 @@ mod tests {
 
     #[test]
     fn test_indexed_stack_basics() {
-        let widget = IndexedStack::new().with_auto_id();
-        let window_size = Size::new(50.0, 50.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let widget = IndexedStack::new().prepare();
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (50, 50));
 
         assert_render_snapshot!(harness, "indexed_stack_empty");
 
         harness.edit_root_widget(|mut stack| {
             IndexedStack::add(
                 &mut stack,
-                Button::with_text("A").with_props(Dimensions::STRETCH),
+                Button::with_text("A")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
         });
@@ -325,17 +332,23 @@ mod tests {
         harness.edit_root_widget(|mut stack| {
             IndexedStack::add(
                 &mut stack,
-                Button::with_text("B").with_props(Dimensions::STRETCH),
+                Button::with_text("B")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
             IndexedStack::add(
                 &mut stack,
-                Button::with_text("C").with_props(Dimensions::STRETCH),
+                Button::with_text("C")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
             IndexedStack::add(
                 &mut stack,
-                Button::with_text("D").with_props(Dimensions::STRETCH),
+                Button::with_text("D")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
         });
@@ -350,13 +363,24 @@ mod tests {
     #[test]
     fn test_widget_removal_and_modification() {
         let widget = IndexedStack::new()
-            .with(Button::with_text("A").with_props(Dimensions::STRETCH))
-            .with(Button::with_text("B").with_props(Dimensions::STRETCH))
-            .with(Button::with_text("C").with_props(Dimensions::STRETCH))
+            .with(
+                Button::with_text("A")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
+            )
+            .with(
+                Button::with_text("B")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
+            )
+            .with(
+                Button::with_text("C")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
+            )
             .with_active_child(1)
-            .with_auto_id();
-        let window_size = Size::new(50.0, 50.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+            .prepare();
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (50, 50));
         // Snapshot with the single widget.
         assert_render_snapshot!(harness, "indexed_stack_initial_builder");
 
@@ -376,7 +400,9 @@ mod tests {
         harness.edit_root_widget(|mut stack| {
             IndexedStack::add(
                 &mut stack,
-                Button::with_text("D").with_props(Dimensions::STRETCH),
+                Button::with_text("D")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
         });
@@ -393,13 +419,17 @@ mod tests {
             IndexedStack::insert(
                 &mut stack,
                 0,
-                Button::with_text("A").with_props(Dimensions::STRETCH),
+                Button::with_text("A")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
             IndexedStack::insert(
                 &mut stack,
                 1,
-                Button::with_text("B").with_props(Dimensions::STRETCH),
+                Button::with_text("B")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
         });
@@ -416,7 +446,9 @@ mod tests {
             IndexedStack::set(
                 &mut stack,
                 1,
-                Button::with_text("D").with_props(Dimensions::STRETCH),
+                Button::with_text("D")
+                    .prepare()
+                    .with_props(Dimensions::STRETCH),
                 (),
             );
         });

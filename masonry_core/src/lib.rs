@@ -20,7 +20,7 @@
 //! - [`Widget`][core::Widget], the trait for GUI widgets in Masonry.
 //! - Event handling and bubbling, using types from [`ui-events`][ui_events] for interoperability.
 //! - Communication between parent and child widgets for layout.
-//! - Compositing of widget's content (to be rendered using [Vello][vello]).
+//! - Compositing of widget's content (to be rendered using [Imaging][imaging]).
 //! - Creation of accessibility trees using [Accesskit][accesskit].
 //! - APIs for widget manipulation (such as [`WidgetMut`][core::WidgetMut]).
 //! - The [`Action`][core::Widget::Action] mechanism by which widgets send events to the application.
@@ -33,7 +33,7 @@
 //! Cases where this apply include:
 //!
 //! - Writing an alternative driver for Masonry (alike to [Masonry Winit][]).
-//! - Witing a library containing one or more custom widget (such as a 2d mapping widget).
+//! - Writing a library containing one or more custom widget (such as a 2d mapping widget).
 //!
 //! Masonry Core can also be used by applications wishing to not use Masonry's provided
 //! set of widgets, so as to have more control.
@@ -47,7 +47,6 @@
 //!
 //! The following crate [feature flags](https://doc.rust-lang.org/cargo/reference/features.html#dependency-features) are available:
 //!
-//! - `default`: Enables the default features of [Vello][vello].
 //! - `tracy`: Enables creating output for the [Tracy](https://github.com/wolfpld/tracy) profiler using [`tracing-tracy`][tracing_tracy].
 //!   This can be used by installing Tracy and connecting to a Masonry with this feature enabled.
 //!
@@ -74,12 +73,16 @@
 )]
 // TODO: Remove any items listed as "Deferred"
 #![cfg_attr(not(debug_assertions), expect(unused, reason = "Deferred: Noisy"))]
-#![expect(missing_debug_implementations, reason = "Deferred: Noisy")]
 #![expect(clippy::cast_possible_truncation, reason = "Deferred: Noisy")]
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(clippy::large_enum_variant, reason = "FIXME: NewWidget is too large")
+)]
 
-pub use vello::peniko::color::palette;
-pub use vello::{kurbo, peniko};
-pub use {accesskit, anymore, dpi, parley, ui_events, vello};
+pub use imaging;
+pub use peniko::color::palette;
+pub use {accesskit, anymore, dpi, parley, ui_events};
+pub use {kurbo, peniko};
 
 // TODO - re-add #[doc(hidden)]
 pub mod doc;

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use assert_matches::assert_matches;
-use masonry_testing::{ModularWidget, Record, TestHarness, TestWidgetExt};
 
 use crate::core::{ChildrenIds, NewWidget, Widget, WidgetPod, WidgetTag};
 use crate::kurbo::{Affine, Point, Vec2};
-use crate::layout::SizeDef;
+use crate::layout::{Length, SizeDef};
+use crate::testing::{ModularWidget, Record, TestHarness, TestWidgetExt};
 use crate::theme::test_property_set;
 use crate::widgets::SizedBox;
 
@@ -20,7 +20,7 @@ fn request_compose() {
 
     let child_tag = WidgetTag::named("child");
     let parent_tag = WidgetTag::named("parent");
-    let child = NewWidget::new_with_tag(SizedBox::empty().record(), child_tag);
+    let child = NewWidget::new(SizedBox::empty().record()).with_tag(child_tag);
 
     let child = ChildAndPos {
         child: child.erased().to_pod(),
@@ -29,7 +29,7 @@ fn request_compose() {
     };
 
     let parent = ModularWidget::new(child)
-        .measure_fn(|_state, _ctx, _props, _axis, _len_req, _cross_length| 0.)
+        .measure_fn(|_state, _ctx, _props, _axis, _len_req, _cross_length| Length::ZERO)
         .layout_fn(|state, ctx, _props, size| {
             let child_size = ctx.compute_size(&mut state.child, SizeDef::fit(size), size.into());
             ctx.run_layout(&mut state.child, child_size);
@@ -42,7 +42,7 @@ fn request_compose() {
             ctx.register_child(&mut state.child);
         })
         .children_fn(|state| ChildrenIds::from_slice(&[state.child.id()]));
-    let parent = NewWidget::new_with_tag(parent.record(), parent_tag);
+    let parent = NewWidget::new(parent.record()).with_tag(parent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), parent);
     harness.flush_records_of(parent_tag);
@@ -81,7 +81,7 @@ fn request_compose() {
 #[test]
 fn scroll_pixel_snap() {
     let child_tag = WidgetTag::named("child");
-    let child = NewWidget::new_with_tag(SizedBox::empty(), child_tag);
+    let child = NewWidget::new(SizedBox::empty()).with_tag(child_tag);
 
     let parent = ModularWidget::new_parent(child)
         .compose_fn(|state, ctx| {
@@ -89,7 +89,7 @@ fn scroll_pixel_snap() {
 
             ctx.set_child_scroll_translation(state, offset);
         })
-        .with_auto_id();
+        .prepare();
 
     let harness = TestHarness::create(test_property_set(), parent);
 

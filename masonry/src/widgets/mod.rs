@@ -3,6 +3,11 @@
 
 //! Common widgets.
 
+#![expect(
+    missing_debug_implementations,
+    reason = "Widgets are not expected to implement Debug"
+)]
+
 mod align;
 mod badge;
 mod badged;
@@ -17,6 +22,7 @@ mod grid;
 mod image;
 mod indexed_stack;
 mod label;
+mod pagination;
 mod passthrough;
 mod portal;
 mod progress_bar;
@@ -57,6 +63,7 @@ pub use self::grid::*;
 pub use self::image::*;
 pub use self::indexed_stack::*;
 pub use self::label::*;
+pub use self::pagination::*;
 pub use self::passthrough::*;
 pub use self::portal::*;
 pub use self::progress_bar::*;

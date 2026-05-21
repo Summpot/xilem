@@ -7,8 +7,9 @@ use crate::core::{
     AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, PaintCtx, PropertiesRef, RegisterCtx,
     Widget, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::LenReq;
+use crate::layout::{LenReq, Length};
 
 /// A widget which sends a [`LayoutChanged`] whenever its size changes.
 ///
@@ -125,8 +126,8 @@ impl Widget for ResizeObserver {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         _len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         ctx.redirect_measurement(&mut self.child, axis, cross_length)
     }
 
@@ -145,7 +146,7 @@ impl Widget for ResizeObserver {
         &mut self,
         _ctx: &mut PaintCtx<'_>,
         _props: &PropertiesRef<'_>,
-        _scene: &mut vello::Scene,
+        _painter: &mut Painter<'_>,
     ) {
     }
 
@@ -169,10 +170,10 @@ impl Widget for ResizeObserver {
 // --- MARK: TESTS
 #[cfg(test)]
 mod tests {
-    use dpi::PhysicalSize;
     use masonry_testing::TestHarness;
 
     use crate::core::{NewWidget, Widget, WidgetTag, WindowEvent};
+    use crate::dpi::PhysicalSize;
     use crate::kurbo::Size;
     use crate::layout::AsUnit;
     use crate::properties::Dimensions;
@@ -183,13 +184,15 @@ mod tests {
     fn detects_inner_resizing() {
         let tag = WidgetTag::named("inner_box");
         let inner_box =
-            NewWidget::new_with_tag(SizedBox::empty().width(100.px()).height(100.px()), tag);
-        let observer = ResizeObserver::new(inner_box).with_props(Dimensions::MAX);
+            NewWidget::new(SizedBox::empty().width(100.px()).height(100.px())).with_tag(tag);
+        let observer = ResizeObserver::new(inner_box)
+            .prepare()
+            .with_props(Dimensions::MAX);
         let observer_id = observer.id();
         // We use a flex here as the inner `SizedBox` will take up the full space available in this case.
         // This doesn't run into the caveat because the size of the inner widget is *not* based on the
         // size of the flex.
-        let flex = Flex::column().with_fixed(observer).with_auto_id();
+        let flex = Flex::column().with_fixed(observer).prepare();
         let mut harness = TestHarness::create(default_property_set(), flex);
         // There will be an initial layout.
         let (LayoutChanged, action_id) = harness.pop_action::<LayoutChanged>().unwrap();
@@ -233,17 +236,13 @@ mod tests {
 
     #[test]
     fn detects_window_resizing() {
-        let inner_box = SizedBox::empty().with_props(Dimensions::STRETCH);
-        let observer = ResizeObserver::new(inner_box).with_props(Dimensions::MAX);
+        let inner_box = SizedBox::empty().prepare().with_props(Dimensions::STRETCH);
+        let observer = ResizeObserver::new(inner_box)
+            .prepare()
+            .with_props(Dimensions::MAX);
         let observer_id = observer.id();
-        let mut harness = TestHarness::create_with_size(
-            default_property_set(),
-            observer,
-            Size {
-                width: 200.,
-                height: 200.,
-            },
-        );
+        let mut harness =
+            TestHarness::create_with_size(default_property_set(), observer, (200, 200));
         // There will be an initial layout.
         let (LayoutChanged, action_id) = harness.pop_action::<LayoutChanged>().unwrap();
         assert_eq!(action_id, observer_id);

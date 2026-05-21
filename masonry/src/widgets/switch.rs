@@ -6,22 +6,19 @@ use std::any::TypeId;
 use accesskit::{Node, Role, Toggled};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace, trace_span};
-use vello::Scene;
 
 use crate::core::keyboard::Key;
 use crate::core::{
-    AccessCtx, AccessEvent, ChildrenIds, EventCtx, HasProperty, LayoutCtx, MeasureCtx, PaintCtx,
-    PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget,
+    AccessCtx, AccessEvent, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx, PointerEvent,
+    PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, UsesProperty, Widget,
     WidgetId, WidgetMut,
 };
-use crate::kurbo::{Axis, Circle, Point, Rect, Size};
-use crate::layout::LenReq;
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, Circle, Join, Point, Rect, Size, Stroke};
+use crate::layout::{LenReq, Length};
 use crate::properties::{
-    ActiveBackground, Background, BorderColor, BorderWidth, CornerRadius, DisabledBackground,
-    FocusedBorderColor, HoveredBorderColor, ThumbColor, ThumbRadius, ToggledBackground,
-    TrackThickness,
+    Background, BorderColor, BorderWidth, CornerRadius, ThumbColor, ThumbRadius, TrackThickness,
 };
-use crate::util::{fill, stroke};
 
 /// A switch switch that can be turned on or off.
 ///
@@ -42,6 +39,12 @@ use crate::util::{fill, stroke};
 ///
 /// This allows higher-level components to choose how the switch responds,
 /// and ensure that its value is based on their correct source of truth.
+///
+/// # Classes
+///
+/// When toggled, this widget will have the `#toggled` [class].
+///
+/// [class]: masonry_core::doc::masonry_concepts#classes
 pub struct Switch {
     on: bool,
 }
@@ -63,10 +66,11 @@ impl Switch {
 impl Switch {
     /// Sets the switch state.
     pub fn set_on(this: &mut WidgetMut<'_, Self>, on: bool) {
-        if this.widget.on != on {
-            this.widget.on = on;
-            // On state impacts appearance and accessibility node
-            this.ctx.request_render();
+        this.widget.on = on;
+        if on {
+            this.ctx.add_class("#toggled");
+        } else {
+            this.ctx.remove_class("#toggled");
         }
     }
 }
@@ -76,27 +80,19 @@ impl Switch {
     /// Calculates the track dimensions based on properties.
     ///
     /// Returns `(track_width, track_height)`.
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "PropertiesRef is given to Widget as a ref"
-    )]
-    fn track_dimensions(props: &PropertiesRef<'_>, scale: f64) -> (f64, f64) {
-        let track_thickness = props.get::<TrackThickness>().0 * scale;
-        let thumb_radius = props.get::<ThumbRadius>().0 * scale;
-
+    fn track_dimensions(track_thickness: Length, thumb_radius: Length) -> (Length, Length) {
         // The track height is the larger of track_thickness or thumb diameter
-        let track_height = track_thickness.max(thumb_radius * 2.0);
+        let track_height = track_thickness.max(thumb_radius.saturating_add(thumb_radius));
         // The track width is approximately 2x the height (pill shape)
-        let track_width = track_height * 2.0;
+        let track_width = track_height.saturating_add(track_height);
 
         (track_width, track_height)
     }
 }
 
-impl HasProperty<ToggledBackground> for Switch {}
-impl HasProperty<ThumbRadius> for Switch {}
-impl HasProperty<ThumbColor> for Switch {}
-impl HasProperty<TrackThickness> for Switch {}
+impl UsesProperty<ThumbRadius> for Switch {}
+impl UsesProperty<ThumbColor> for Switch {}
+impl UsesProperty<TrackThickness> for Switch {}
 
 /// The action type emitted by [`Switch`] when it is activated.
 ///
@@ -120,11 +116,9 @@ impl Widget for Switch {
                 ctx.capture_pointer();
                 trace!("Switch {:?} pressed", ctx.widget_id());
             }
-            PointerEvent::Up { .. } => {
-                if ctx.is_active() && ctx.is_hovered() {
-                    ctx.submit_action::<Self::Action>(SwitchToggled(!self.on));
-                    trace!("Switch {:?} released", ctx.widget_id());
-                }
+            PointerEvent::Up { .. } if ctx.is_active() && ctx.is_hovered() => {
+                ctx.submit_action::<Self::Action>(SwitchToggled(!self.on));
+                trace!("Switch {:?} released", ctx.widget_id());
             }
             _ => (),
         }
@@ -168,6 +162,9 @@ impl Widget for Switch {
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
         match event {
+            Update::WidgetAdded if self.on => {
+                ctx.add_class("#toggled");
+            }
             Update::HoveredChanged(_)
             | Update::ActiveChanged(_)
             | Update::FocusChanged(_)
@@ -182,7 +179,6 @@ impl Widget for Switch {
     fn register_children(&mut self, _ctx: &mut RegisterCtx<'_>) {}
 
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
-        ToggledBackground::prop_changed(ctx, property_type);
         ThumbRadius::prop_changed(ctx, property_type);
         ThumbColor::prop_changed(ctx, property_type);
         TrackThickness::prop_changed(ctx, property_type);
@@ -190,17 +186,16 @@ impl Widget for Switch {
 
     fn measure(
         &mut self,
-        _ctx: &mut MeasureCtx<'_>,
+        ctx: &mut MeasureCtx<'_>,
         props: &PropertiesRef<'_>,
         axis: Axis,
         _len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let (track_width, track_height) = Self::track_dimensions(props, scale);
+        _cross_length: Option<Length>,
+    ) -> Length {
+        let cache = ctx.property_cache();
+        let track_thickness = props.get::<TrackThickness>(cache).0;
+        let thumb_radius = props.get::<ThumbRadius>(cache).0;
+        let (track_width, track_height) = Self::track_dimensions(track_thickness, thumb_radius);
 
         match axis {
             Axis::Horizontal => track_width,
@@ -214,28 +209,33 @@ impl Widget for Switch {
         &mut self,
         _ctx: &mut PaintCtx<'_>,
         _props: &PropertiesRef<'_>,
-        _scene: &mut Scene,
+        _painter: &mut Painter<'_>,
     ) {
         // TODO: Make Switch painting work with generic shadow/background/border
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let is_focused = ctx.is_focus_target();
-        let is_pressed = ctx.is_active();
-        let is_hovered = ctx.is_hovered();
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let is_disabled = ctx.is_disabled();
 
         let size = ctx.border_box_size();
 
-        let (track_width, track_height) = Self::track_dimensions(props, scale);
-        let thumb_radius = props.get::<ThumbRadius>().0 * scale;
-        let border_width = props.get::<BorderWidth>().width * scale;
-        let corner_radius = props.get::<CornerRadius>().radius * scale;
-        let thumb_color = props.get::<ThumbColor>().0;
+        let border_box_translation = ctx.border_box_translation();
+        let cache = ctx.property_cache();
+        let track_thickness_val = props.get::<TrackThickness>(cache).0;
+        let thumb_radius_val = props.get::<ThumbRadius>(cache).0;
+        let (track_width, track_height) =
+            Self::track_dimensions(track_thickness_val, thumb_radius_val);
+        let track_width = track_width.get();
+        let track_height = track_height.get();
+        let thumb_radius = thumb_radius_val.get();
+        let border_width = props.get::<BorderWidth>(cache).width.get();
+        let corner_radius = props.get::<CornerRadius>(cache).radius.get();
+        let thumb_color = props.get::<ThumbColor>(cache).0;
 
         // Center the track within the available space
         let track_x = (size.width - track_width) / 2.0;
@@ -245,44 +245,29 @@ impl Widget for Switch {
             track_y,
             track_x + track_width,
             track_y + track_height,
-        ) - ctx.border_box_translation();
+        ) - border_box_translation;
 
-        // Determine track background color
-        let track_bg = if is_disabled && let Some(db) = props.get_defined::<DisabledBackground>() {
-            &db.0
-        } else if is_pressed && let Some(ab) = props.get_defined::<ActiveBackground>() {
-            &ab.0
-        } else if self.on
-            && let Some(tb) = props.get_defined::<ToggledBackground>()
-        {
-            &tb.0
-        } else {
-            props.get::<Background>()
-        };
+        let track_bg = props.get::<Background>(cache);
 
         // Paint track background
         let track_corner_radius = corner_radius.min(track_height / 2.0);
         let track_rounded = track_rect.to_rounded_rect(track_corner_radius);
         let brush = track_bg.get_peniko_brush_for_rect(track_rect);
-        fill(scene, &track_rounded, &brush);
+        painter.fill(track_rounded, &brush).draw();
 
-        // Determine border color
-        let border_color = if is_focused && let Some(fb) = props.get_defined::<FocusedBorderColor>()
-        {
-            &fb.0
-        } else if is_hovered && let Some(hb) = props.get_defined::<HoveredBorderColor>() {
-            &hb.0
-        } else {
-            props.get::<BorderColor>()
-        };
+        let border_color = props.get::<BorderColor>(cache);
 
         // Paint track border
         if border_width > 0.0 {
-            stroke(scene, &track_rounded, border_color.color, border_width);
+            // Use miter joins so a zero-radius track keeps square corners.
+            let stroke = Stroke::new(border_width).with_join(Join::Miter);
+            painter
+                .stroke(track_rounded, &stroke, border_color.color)
+                .draw();
         }
 
         // Calculate thumb position (centered vertically, left/right based on state)
-        let thumb_y = size.height / 2.0 - ctx.border_box_translation().y;
+        let thumb_y = size.height / 2.0 - border_box_translation.y;
         let thumb_x = if self.on {
             // Thumb on the right
             track_rect.x1 - thumb_radius - border_width / 2.0
@@ -298,7 +283,7 @@ impl Widget for Switch {
         } else {
             thumb_color
         };
-        fill(scene, &thumb_circle, thumb_brush);
+        painter.fill(thumb_circle, thumb_brush).draw();
     }
 
     fn accessibility_role(&self) -> Role {
@@ -350,9 +335,8 @@ mod tests {
 
     #[test]
     fn click_emits_action_and_focuses() {
-        let widget = Switch::new(false).with_auto_id();
-        let window_size = Size::new(60.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let widget = Switch::new(false).prepare();
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (60, 40));
         let switch_id = harness.root_id();
 
         // Initially not focused, and no actions
@@ -361,7 +345,7 @@ mod tests {
         assert!(harness.pop_action_erased().is_none());
 
         // Click on switch (off -> wants to be on)
-        harness.mouse_click_on(switch_id);
+        harness.mouse_click_on(switch_id, None);
         assert_eq!(harness.focused_widget().map(|w| w.id()), Some(switch_id));
         assert_eq!(
             harness.pop_action::<SwitchToggled>(),
@@ -372,7 +356,7 @@ mod tests {
         harness.edit_root_widget(|mut switch| Switch::set_on(&mut switch, true));
 
         // Click again (on -> wants to be off)
-        harness.mouse_click_on(switch_id);
+        harness.mouse_click_on(switch_id, None);
         assert_eq!(
             harness.pop_action::<SwitchToggled>(),
             Some((SwitchToggled(false), switch_id))
@@ -381,9 +365,8 @@ mod tests {
 
     #[test]
     fn space_emits_action_when_focused() {
-        let widget = Switch::new(false).with_auto_id();
-        let window_size = Size::new(60.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let widget = Switch::new(false).prepare();
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (60, 40));
         let switch_id = harness.root_id();
 
         // Focus via tab
@@ -414,10 +397,10 @@ mod tests {
     #[test]
     fn measure_dimensions() {
         // Test that the switch measures to expected dimensions based on theme properties.
-        // Theme defaults: ThumbRadius(8.0), TrackThickness(20.0), BorderWidth(1.0)
+        // Theme defaults: ThumbRadius(8px), TrackThickness(20px), BorderWidth(1px)
         // Expected: track_height = max(20, 8*2) = 20, track_width = 20*2 = 40
         // With borders: width = 42, height = 22
-        let switch = Switch::new(false).with_auto_id();
+        let switch = Switch::new(false).prepare();
         let switch_id = switch.id();
 
         // Wrap in Flex with Start alignment so it doesn't stretch the switch
@@ -427,9 +410,8 @@ mod tests {
             .cross_axis_alignment(CrossAxisAlignment::Start);
 
         // Give it much more space than needed
-        let window_size = Size::new(200.0, 100.0);
         let harness =
-            TestHarness::create_with_size(test_property_set(), flex.with_auto_id(), window_size);
+            TestHarness::create_with_size(test_property_set(), flex.prepare(), (200, 100));
 
         let size = harness
             .get_widget_with_id(switch_id)
@@ -451,10 +433,9 @@ mod tests {
 
     #[test]
     fn simple_switch() {
-        let widget = Switch::new(false).with_auto_id();
+        let widget = Switch::new(false).prepare();
 
-        let window_size = Size::new(60.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (60, 40));
         let switch_id = harness.root_id();
 
         assert_render_snapshot!(harness, "switch_off");
@@ -466,7 +447,7 @@ mod tests {
         assert_render_snapshot!(harness, "switch_off_hovered");
 
         // Now click to switch
-        harness.mouse_click_on(switch_id);
+        harness.mouse_click_on(switch_id, None);
         assert_eq!(
             harness.pop_action::<SwitchToggled>(),
             Some((SwitchToggled(true), switch_id))
@@ -480,10 +461,9 @@ mod tests {
 
     #[test]
     fn focus_visual() {
-        let widget = Switch::new(false).with_auto_id();
+        let widget = Switch::new(false).prepare();
 
-        let window_size = Size::new(60.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (60, 40));
         let switch_id = harness.root_id();
 
         // Focus directly (not via click) to get focused-but-not-hovered state
@@ -495,10 +475,9 @@ mod tests {
 
     #[test]
     fn on_state() {
-        let widget = Switch::new(true).with_auto_id();
+        let widget = Switch::new(true).prepare();
 
-        let window_size = Size::new(60.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (60, 40));
 
         assert_render_snapshot!(harness, "switch_on_initial");
     }

@@ -4,14 +4,14 @@
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx, PropertiesRef,
     RegisterCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size, Vec2};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
 
 /// Where a badge is placed relative to the content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,8 +185,8 @@ impl Widget for Badged {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
         ctx.compute_length(
@@ -218,7 +218,13 @@ impl Widget for Badged {
         ctx.place_child(badge, badge_origin);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -253,20 +259,20 @@ mod tests {
     use crate::theme::test_property_set;
     use crate::widgets::{Align, Badge, Button};
 
+    const ROOT_PADDING: u32 = TestHarnessParams::ROOT_PADDING;
+
     #[test]
     fn badged_button() {
         let widget = Align::centered(
             Badged::new(
-                Button::with_text("Inbox").with_auto_id(),
-                Badge::with_text("3").with_auto_id(),
+                Button::with_text("Inbox").prepare(),
+                Badge::with_text("3").prepare(),
             )
-            .with_auto_id(),
+            .prepare(),
         )
-        .with_auto_id();
+        .prepare();
 
-        let mut params = TestHarnessParams::DEFAULT;
-        params.window_size = Size::new(240.0, 120.0);
-        params.root_padding = TestHarnessParams::ROOT_PADDING;
+        let params = TestHarnessParams::size_and_padding((240, 120), ROOT_PADDING);
         let mut harness = TestHarness::create_with(test_property_set(), widget, params);
 
         assert_render_snapshot!(harness, "badged_button");
@@ -275,13 +281,11 @@ mod tests {
     #[test]
     fn badged_button_optional_badge() {
         let widget = Align::centered(
-            Badged::new_optional(Button::with_text("Inbox").with_auto_id(), None).with_auto_id(),
+            Badged::new_optional(Button::with_text("Inbox").prepare(), None).prepare(),
         )
-        .with_auto_id();
+        .prepare();
 
-        let mut params = TestHarnessParams::DEFAULT;
-        params.window_size = Size::new(240.0, 120.0);
-        params.root_padding = TestHarnessParams::ROOT_PADDING;
+        let params = TestHarnessParams::size_and_padding((240, 120), ROOT_PADDING);
         let mut harness = TestHarness::create_with(test_property_set(), widget, params);
 
         assert_render_snapshot!(harness, "badged_button_no_badge");

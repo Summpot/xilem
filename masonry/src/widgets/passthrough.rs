@@ -3,14 +3,14 @@
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx, PropertiesRef,
     RegisterCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::LenReq;
+use crate::layout::{LenReq, Length};
 
 /// A pass-through container that hosts exactly one child, which may be replaced dynamically.
 ///
@@ -32,11 +32,11 @@ use crate::layout::LenReq;
 /// use masonry::widgets::{Passthrough, Label};
 ///
 /// // Create a host around a label
-/// let host = Passthrough::new(Label::new("Hello").with_auto_id()).with_props(Dimensions::MAX);
+/// let host = Passthrough::new(Label::new("Hello").prepare()).prepare().with_props(Dimensions::MAX);
 ///
 /// // ... in an edit callback, mutate the widget tree
 /// # fn edit(mut host: masonry::core::WidgetMut<'_, Passthrough>) {
-/// Passthrough::set_child(&mut host, Label::new("World").with_auto_id());
+/// Passthrough::set_child(&mut host, Label::new("World").prepare());
 /// # }
 /// ```
 ///
@@ -93,8 +93,8 @@ impl Widget for Passthrough {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         _len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         ctx.redirect_measurement(&mut self.inner, axis, cross_length)
     }
 
@@ -104,7 +104,13 @@ impl Widget for Passthrough {
         ctx.derive_baselines(&self.inner);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -131,7 +137,6 @@ impl Widget for Passthrough {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kurbo::Size;
     use crate::properties::Dimensions;
     use crate::testing::{TestHarness, assert_render_snapshot};
     use crate::theme::test_property_set;
@@ -140,9 +145,10 @@ mod tests {
     #[test]
     fn passthrough_replaces_child() {
         // Start with a label
-        let widget = Passthrough::new(Label::new("A").with_auto_id()).with_props(Dimensions::MAX);
-        let window_size = Size::new(30.0, 30.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let widget = Passthrough::new(Label::new("A").prepare())
+            .prepare()
+            .with_props(Dimensions::MAX);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (30, 30));
 
         assert_render_snapshot!(harness, "passthrough_initial_label_A");
 
@@ -155,7 +161,7 @@ mod tests {
 
         // Replace with a label with different text
         harness.edit_root_widget(|mut host| {
-            Passthrough::set_child(&mut host, Label::new("B").with_auto_id());
+            Passthrough::set_child(&mut host, Label::new("B").prepare());
         });
 
         assert_render_snapshot!(harness, "passthrough_replaced_label_B");

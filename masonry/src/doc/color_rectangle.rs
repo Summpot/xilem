@@ -9,6 +9,8 @@
 // TODO - Find some way to check that code chunks in docs
 // are up to date with this file.
 
+#![expect(missing_debug_implementations, reason = "Example code")]
+
 use crate as masonry;
 
 // Note: The "// ---" lines separate blocks of code which are included together in
@@ -17,23 +19,20 @@ use crate as masonry;
 
 use masonry::peniko::Color;
 // ---
-use masonry::core::{
-    AccessEvent, EventCtx, PointerButton, PointerEvent, PropertiesMut, TextEvent, Widget,
-};
+use masonry::core::{AccessEvent, EventCtx, PointerEvent, PropertiesMut, TextEvent, Widget};
 // ---
 use masonry::core::{Update, UpdateCtx};
 // ---
 use masonry::core::{LayoutCtx, MeasureCtx, PropertiesRef};
 use masonry::kurbo::{Axis, Size};
-use masonry::layout::LenReq;
+use masonry::layout::{LenReq, Length};
 // ---
 use masonry::accesskit::{Node, Role};
 use masonry::core::{AccessCtx, PaintCtx};
-use masonry::kurbo::Affine;
-use masonry::peniko::Fill;
-use masonry::vello::Scene;
+use masonry::imaging::Painter;
 // ---
 use masonry::core::WidgetId;
+use masonry_core::layout::AsUnit;
 use tracing::{Span, trace_span};
 // ---
 use masonry::core::{ChildrenIds, RegisterCtx};
@@ -77,7 +76,7 @@ impl Widget for ColorRectangle {
         event: &PointerEvent,
     ) {
         match event {
-            PointerEvent::Down(b) if b.button == Some(PointerButton::Primary) => {
+            PointerEvent::Down(_) => {
                 ctx.submit_action::<Self::Action>(ColorRectanglePress);
             }
             _ => {}
@@ -132,16 +131,12 @@ impl Widget for ColorRectangle {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+        _cross_length: Option<Length>,
+    ) -> Length {
         match len_req {
             LenReq::MinContent | LenReq::MaxContent => match axis {
-                Axis::Horizontal => 200. * scale,
-                Axis::Vertical => 100. * scale,
+                Axis::Horizontal => 200.px(),
+                Axis::Vertical => 100.px(),
             },
             LenReq::FitContent(space) => space,
         }
@@ -152,15 +147,14 @@ impl Widget for ColorRectangle {
     // ---
 
     #[cfg(false)] // We show two `paint` implementations; check that both parse.
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let rect = ctx.size().to_rect();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            self.color,
-            Some(Affine::IDENTITY),
-            &rect,
-        );
+        painter.fill(rect, self.color).draw();
     }
 
     fn accessibility_role(&self) -> Role {
@@ -194,20 +188,19 @@ impl Widget for ColorRectangle {
     // Second implementation from "Creating a new widget" tutorial.
     // We use these methods in the trait, so that hovering is detected in our unit tests.
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let rect = ctx.content_box();
         let color = if ctx.is_hovered() {
-            Color::WHITE
+            Color::from_rgb8(0xD2, 0xD2, 0xD2)
         } else {
             self.color
         };
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            color,
-            Some(Affine::IDENTITY),
-            &rect,
-        );
+        painter.fill(rect, color).draw();
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
@@ -224,18 +217,19 @@ impl Widget for ColorRectangle {
 
 // Implementation from "Reading widget properties" tutorial.
 #[expect(dead_code, reason = "example code")]
-#[expect(clippy::trivially_copy_pass_by_ref, reason = "example code")]
 impl ColorRectangle {
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        let background = props.get::<Background>();
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let cache = ctx.property_cache();
+        let background = props.get::<Background>(cache);
         let rect = ctx.content_box();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &background.get_peniko_brush_for_rect(rect),
-            Some(Affine::IDENTITY),
-            &rect,
-        );
+        painter
+            .fill(rect, &background.get_peniko_brush_for_rect(rect))
+            .draw();
     }
 }
 
@@ -267,7 +261,9 @@ mod tests {
 
     #[test]
     fn simple_rect() {
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
 
@@ -282,7 +278,9 @@ mod tests {
 
     #[test]
     fn hovered() {
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
         let rect_id = harness.root_id();
@@ -298,7 +296,9 @@ mod tests {
     #[test]
     fn edit_rect() {
         const RED: Color = Color::from_rgb8(u8::MAX, 0, 0);
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
 
@@ -314,12 +314,14 @@ mod tests {
 
     #[test]
     fn on_click() {
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
         let rect_id = harness.root_id();
 
-        harness.mouse_click_on(rect_id);
+        harness.mouse_click_on(rect_id, None);
         assert!(matches!(
             harness.pop_action::<ColorRectanglePress>(),
             Some((ColorRectanglePress, _))

@@ -6,16 +6,16 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use dpi::PhysicalPosition;
-
 use crate::core::keyboard::{Key, KeyState, NamedKey};
 use crate::core::{
     AccessCtx, AccessEvent, ChildrenIds, ComposeCtx, EventCtx, KeyboardEvent, LayoutCtx,
     MeasureCtx, NewWidget, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut,
     PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut, WidgetPod,
 };
+use crate::dpi::PhysicalPosition;
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size, Vec2};
-use crate::layout::{LenDef, LenReq, SizeDef};
+use crate::layout::{LenDef, LenReq, Length, SizeDef};
 use crate::util::debug_panic;
 
 /// The action type sent by the [`VirtualScroll`] widget.
@@ -537,8 +537,6 @@ impl Widget for VirtualScroll {
         match event {
             PointerEvent::Scroll(PointerScrollEvent { delta, .. }) => {
                 let size = ctx.content_box_size();
-                // TODO - Remove reference to scale factor.
-                // See https://github.com/linebender/xilem/issues/1264
                 let scale_factor = ctx.get_scale_factor();
                 let line_px = PhysicalPosition {
                     x: 120.0 * scale_factor,
@@ -655,8 +653,8 @@ impl Widget for VirtualScroll {
         _props: &PropertiesRef<'_>,
         _axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
+        _cross_length: Option<Length>,
+    ) -> Length {
         // Our preferred size is a const square in logical pixels.
         //
         // It is not clear that a data-derived result would be better.
@@ -672,14 +670,10 @@ impl Widget for VirtualScroll {
         // Still, we would run into complexities with ensuring they are loaded in time for measure.
         //
         // So, for now, we just use a simple O(1) default.
-        const DEFAULT_LENGTH: f64 = 100.;
-
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        const DEFAULT_LENGTH: Length = Length::const_px(100.);
 
         match len_req {
-            LenReq::MinContent | LenReq::MaxContent => DEFAULT_LENGTH * scale,
+            LenReq::MinContent | LenReq::MaxContent => DEFAULT_LENGTH,
             LenReq::FitContent(space) => space,
         }
     }
@@ -944,7 +938,7 @@ impl Widget for VirtualScroll {
         &mut self,
         _ctx: &mut PaintCtx<'_>,
         _props: &PropertiesRef<'_>,
-        _scene: &mut vello::Scene,
+        _painter: &mut Painter<'_>,
     ) {
         // We run these checks in `paint` as they are outside of the pass-based fixedpoint loop
         if !self.action_handled {
@@ -1077,12 +1071,10 @@ fn opt_iter_difference(
 mod tests {
     use std::collections::HashSet;
 
-    use kurbo::{Size, Vec2};
-    use parley::StyleProperty;
-
     use super::opt_iter_difference;
     use crate::core::{NewWidget, Widget, WidgetId, WidgetMut};
-    use crate::kurbo;
+    use crate::kurbo::Vec2;
+    use crate::parley::StyleProperty;
     use crate::testing::{TestHarness, assert_render_snapshot};
     use crate::theme::test_property_set;
     use crate::widgets::{Label, VirtualScroll, VirtualScrollAction};
@@ -1124,10 +1116,9 @@ mod tests {
 
     #[test]
     fn sensible_driver() {
-        let widget = VirtualScroll::new(0).with_auto_id();
+        let widget = VirtualScroll::new(0).prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(100., 200.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 200));
         let virtual_scroll_id = harness.root_id();
         fn driver(action: VirtualScrollAction, mut scroll: WidgetMut<'_, VirtualScroll>) {
             VirtualScroll::will_handle_action(&mut scroll, &action);
@@ -1167,10 +1158,9 @@ mod tests {
     /// We shouldn't panic or loop if there are small gaps in the items provided by the driver.
     /// Again, this isn't valid code for a user to write, but we should just warn and deal with it
     fn small_gaps() {
-        let widget = VirtualScroll::new(0).with_auto_id();
+        let widget = VirtualScroll::new(0).prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(100., 200.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 200));
         let virtual_scroll_id = harness.root_id();
         fn driver(action: VirtualScrollAction, mut scroll: WidgetMut<'_, VirtualScroll>) {
             VirtualScroll::will_handle_action(&mut scroll, &action);
@@ -1207,10 +1197,9 @@ mod tests {
     /// We shouldn't panic or loop if there are big gaps in the items provided by the driver.
     /// Note that we don't test rendering in this case, because this is a driver which breaks our contract.
     fn big_gaps() {
-        let widget = VirtualScroll::new(0).with_auto_id();
+        let widget = VirtualScroll::new(0).prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(100., 200.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 200));
         let virtual_scroll_id = harness.root_id();
         fn driver(action: VirtualScrollAction, mut scroll: WidgetMut<'_, VirtualScroll>) {
             VirtualScroll::will_handle_action(&mut scroll, &action);
@@ -1247,10 +1236,9 @@ mod tests {
     /// We shouldn't panic or loop if the driver is very poorly written (doesn't set `valid_range` correctly)
     /// Note that we don't test rendering in this case, because this is a driver which breaks our contract.
     fn degenerate_driver() {
-        let widget = VirtualScroll::new(0).with_auto_id();
+        let widget = VirtualScroll::new(0).prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(100., 200.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 200));
         let virtual_scroll_id = harness.root_id();
         fn driver(action: VirtualScrollAction, mut scroll: WidgetMut<'_, VirtualScroll>) {
             VirtualScroll::will_handle_action(&mut scroll, &action);
@@ -1289,10 +1277,9 @@ mod tests {
         const MIN: i64 = 10;
         let widget = VirtualScroll::new(0)
             .with_valid_range(MIN..i64::MAX)
-            .with_auto_id();
+            .prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(100., 200.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 200));
         let virtual_scroll_id = harness.root_id();
         fn driver(action: VirtualScrollAction, mut scroll: WidgetMut<'_, VirtualScroll>) {
             VirtualScroll::will_handle_action(&mut scroll, &action);
@@ -1356,10 +1343,9 @@ mod tests {
         const MAX: i64 = 10;
         let widget = VirtualScroll::new(100)
             .with_valid_range(i64::MIN..MAX)
-            .with_auto_id();
+            .prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(100., 200.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 200));
         let virtual_scroll_id = harness.root_id();
         fn driver(action: VirtualScrollAction, mut scroll: WidgetMut<'_, VirtualScroll>) {
             VirtualScroll::will_handle_action(&mut scroll, &action);

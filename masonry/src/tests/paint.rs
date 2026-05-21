@@ -1,27 +1,32 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::Arc;
+
 use assert_matches::assert_matches;
 
-use crate::core::{NewWidget, PropertySet, Widget, WidgetTag};
-use crate::kurbo::{Affine, Circle, Dashes, Point, Size, Stroke, Vec2};
+use crate::app::{RenderRoot, RenderRootOptions, WindowSizePolicy};
+use crate::core::{NewWidget, PaintLayerMode, PropertySet, Widget, WidgetTag};
+use crate::dpi::PhysicalSize;
+use crate::kurbo::{Circle, Dashes, Point, Stroke, Vec2};
 use crate::layout::{AsUnit, Length, SizeDef, UnitPoint};
 use crate::palette::css::{BLUE, GREEN, RED};
-use crate::peniko::Color;
 use crate::peniko::color::{AlphaColor, Srgb};
+use crate::peniko::{Blob, Color};
 use crate::properties::types::MainAxisAlignment;
 use crate::properties::{Background, Dimensions, Gap, Padding};
-use crate::testing::{ModularWidget, Record, TestHarness, TestWidgetExt, assert_render_snapshot};
+use crate::testing::{
+    ModularWidget, ROBOTO, Record, TestHarness, TestWidgetExt, assert_render_snapshot,
+};
 use crate::theme::test_property_set;
-use crate::util::{fill, stroke};
 use crate::widgets::{Align, ChildAlignment, Flex, Grid, GridParams, Label, SizedBox, ZStack};
 
 #[test]
 fn request_paint() {
     let target_tag = WidgetTag::named("target");
     let parent_tag = WidgetTag::named("parent");
-    let child = NewWidget::new_with_tag(SizedBox::empty().record(), target_tag);
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(child).record(), parent_tag);
+    let child = NewWidget::new(SizedBox::empty().record()).with_tag(target_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(child).record()).with_tag(parent_tag);
     let grandparent = NewWidget::new(ModularWidget::new_parent(parent));
 
     let mut harness = TestHarness::create(test_property_set(), grandparent);
@@ -62,22 +67,16 @@ fn request_paint() {
 fn paint_order() {
     const SQUARE_SIZE: f64 = 30.;
     const SQUARE_LENGTH: Length = Length::const_px(SQUARE_SIZE);
-    let child1 = NewWidget::new_with_props(
-        SizedBox::empty().width(SQUARE_LENGTH).height(SQUARE_LENGTH),
-        Background::Color(RED),
-    );
-    let child2 = NewWidget::new_with_props(
-        SizedBox::empty().width(SQUARE_LENGTH).height(SQUARE_LENGTH),
-        Background::Color(GREEN),
-    );
-    let child3 = NewWidget::new_with_props(
-        SizedBox::empty().width(SQUARE_LENGTH).height(SQUARE_LENGTH),
-        Background::Color(BLUE),
-    );
+    let child1 = NewWidget::new(SizedBox::empty().width(SQUARE_LENGTH).height(SQUARE_LENGTH))
+        .with_props(Background::Color(RED));
+    let child2 = NewWidget::new(SizedBox::empty().width(SQUARE_LENGTH).height(SQUARE_LENGTH))
+        .with_props(Background::Color(GREEN));
+    let child3 = NewWidget::new(SizedBox::empty().width(SQUARE_LENGTH).height(SQUARE_LENGTH))
+        .with_props(Background::Color(BLUE));
     let children = vec![child1, child2, child3];
     let parent = NewWidget::new(
         ModularWidget::new_multi_parent(children)
-            .measure_fn(|_, _, _, _, _, _| SQUARE_SIZE * 2.)
+            .measure_fn(|_, _, _, _, _, _| (SQUARE_SIZE * 2.).px())
             .layout_fn(move |children, ctx, _props, size| {
                 let mut pos = Point::ZERO;
                 for child in children {
@@ -88,11 +87,11 @@ fn paint_order() {
                 }
             })
             .paint_fn(|_, ctx, _, scene| {
-                fill(scene, &ctx.content_box(), Color::WHITE);
+                scene.fill(ctx.content_box(), Color::WHITE).draw();
             })
             .post_paint_fn(|_, ctx, _, scene| {
                 let rect = ctx.content_box().inset(-0.5);
-                stroke(scene, &rect, Color::BLACK, 1.0);
+                scene.stroke(rect, &Stroke::new(1.0), Color::BLACK).draw();
             }),
     );
     let grandparent = NewWidget::new(
@@ -104,7 +103,7 @@ fn paint_order() {
     let mut harness = TestHarness::create_with_size(
         test_property_set(),
         grandparent,
-        Size::new(SQUARE_SIZE * 3., SQUARE_SIZE * 3.),
+        (SQUARE_SIZE as u32 * 3, SQUARE_SIZE as u32 * 3),
     );
 
     // The resulting image should have, from background to foreground:
@@ -123,21 +122,21 @@ fn paint_clipping() {
 
     let parent = NewWidget::new(
         ModularWidget::new(())
-            .measure_fn(|_, _, _, _, _, _| SQUARE_SIZE)
+            .measure_fn(|_, _, _, _, _, _| SQUARE_SIZE.px())
             .layout_fn(|_, ctx, _, size| {
                 ctx.set_clip_path(size.to_rect());
             })
             .paint_fn(move |_, ctx, _, scene| {
-                fill(scene, &ctx.content_box(), Color::WHITE);
-                fill(scene, &circle, RED);
+                scene.fill(ctx.content_box(), Color::WHITE).draw();
+                scene.fill(circle, RED).draw();
             })
-            .post_paint_fn(move |_, _, _, scene| {
+            .post_paint_fn(move |_, _, _, painter| {
                 let style = Stroke {
                     width: 4.0,
                     dash_pattern: Dashes::from_slice(&[12.0, 12.0]),
                     ..Default::default()
                 };
-                scene.stroke(&style, Affine::IDENTITY, Color::BLACK, None, &circle);
+                painter.stroke(circle, &style, Color::BLACK).draw();
             }),
     );
     let parent = NewWidget::new(
@@ -149,12 +148,124 @@ fn paint_clipping() {
     let mut harness = TestHarness::create_with_size(
         test_property_set(),
         parent,
-        Size::new(SQUARE_SIZE * 2., SQUARE_SIZE * 2.),
+        (SQUARE_SIZE as u32 * 2, SQUARE_SIZE as u32 * 2),
     );
 
     // The red circle should be clipped by the square.
     // The dashed circle shouldn't.
     assert_render_snapshot!(harness, "paint_clipping");
+}
+
+fn make_layer_split_tree(isolate_trailing_box: bool) -> NewWidget<impl Widget> {
+    let leading = NewWidget::new(
+        ModularWidget::new(())
+            .measure_fn(|_, _, _, _, _, _| 20.px())
+            .paint_fn(|_, ctx, _, scene| {
+                scene.fill(ctx.content_box(), RED).draw();
+            }),
+    );
+    let trailing = NewWidget::new(
+        ModularWidget::new(isolate_trailing_box)
+            .measure_fn(|_, _, _, _, _, _| 20.px())
+            .paint_fn(|isolate, ctx, _, scene| {
+                if *isolate {
+                    ctx.set_paint_layer_mode(PaintLayerMode::IsolatedScene);
+                }
+                scene.fill(ctx.content_box(), BLUE).draw();
+            }),
+    );
+
+    Flex::row()
+        .with_fixed(leading)
+        .with_fixed(trailing)
+        .prepare()
+}
+
+fn make_external_placeholder_tree() -> NewWidget<impl Widget> {
+    let leading = NewWidget::new(
+        ModularWidget::new(())
+            .measure_fn(|_, _, _, _, _, _| 20.px())
+            .paint_fn(|_, ctx, _, scene| {
+                scene.fill(ctx.content_box(), RED).draw();
+            }),
+    );
+    let placeholder = NewWidget::new(
+        ModularWidget::new(())
+            .measure_fn(|_, _, _, _, _, _| 20.px())
+            .layout_fn(|_, ctx, _, size| {
+                ctx.set_clip_path(size.to_rect());
+            })
+            .paint_fn(|_, ctx, _, _scene| {
+                ctx.set_paint_layer_mode(PaintLayerMode::External);
+            }),
+    );
+    let trailing = NewWidget::new(
+        ModularWidget::new(())
+            .measure_fn(|_, _, _, _, _, _| 20.px())
+            .paint_fn(|_, ctx, _, scene| {
+                scene.fill(ctx.content_box(), BLUE).draw();
+            }),
+    );
+
+    Flex::row()
+        .with_fixed(leading)
+        .with_fixed(placeholder)
+        .with_fixed(trailing)
+        .prepare()
+}
+
+fn create_render_root(root_widget: NewWidget<impl Widget>) -> RenderRoot {
+    let test_font = Blob::new(Arc::new(ROBOTO));
+    RenderRoot::new(
+        root_widget,
+        |_| {},
+        RenderRootOptions {
+            default_properties: Arc::new(test_property_set()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(40, 20),
+            scale_factor: 1.0,
+            test_font: Some(test_font),
+        },
+    )
+}
+
+#[test]
+fn isolated_scene_layers_update_the_plan_without_changing_rendering() {
+    let mut inline_root = create_render_root(make_layer_split_tree(false));
+    let (inline_layers, _) = inline_root.redraw();
+    assert_eq!(inline_layers.layers.len(), 1);
+
+    let mut isolated_root = create_render_root(make_layer_split_tree(true));
+    let (isolated_layers, _) = isolated_root.redraw();
+    assert_eq!(isolated_layers.layers.len(), 2);
+
+    let mut inline_harness =
+        TestHarness::create_with_size(test_property_set(), make_layer_split_tree(false), (40, 20));
+    let mut isolated_harness =
+        TestHarness::create_with_size(test_property_set(), make_layer_split_tree(true), (40, 20));
+
+    assert_eq!(inline_harness.render(), isolated_harness.render());
+}
+
+#[test]
+fn external_placeholders_appear_in_painter_order() {
+    let mut root = create_render_root(make_external_placeholder_tree());
+    let (visual_layers, _) = root.redraw();
+    assert_eq!(visual_layers.layers.len(), 3);
+
+    assert!(matches!(
+        visual_layers.layers[0].kind,
+        crate::app::VisualLayerKind::Scene(_)
+    ));
+    assert!(matches!(
+        visual_layers.layers[1].kind,
+        crate::app::VisualLayerKind::External { .. }
+    ));
+    assert!(matches!(
+        visual_layers.layers[2].kind,
+        crate::app::VisualLayerKind::Scene(_)
+    ));
 }
 
 // Layered slightly misaligned grid layer painting:
@@ -171,7 +282,7 @@ fn paint_transparency() {
     ) -> NewWidget<Align> {
         let bg_color = bg_color.into();
 
-        let label = Label::new(text).with_props((
+        let label = Label::new(text).prepare().with_props((
             Background::Color(Color::TRANSPARENT),
             Dimensions::fixed(20.px(), 20.px()),
         ));
@@ -181,7 +292,7 @@ fn paint_transparency() {
             props = props.with(Background::Color(bg_color));
         }
 
-        Align::new(align, label).with_props(props)
+        Align::new(align, label).prepare().with_props(props)
     }
 
     let align_a = UnitPoint::TOP_LEFT;
@@ -219,19 +330,15 @@ fn paint_transparency() {
         GridParams::new(13, 0, 3, 1),
     );
 
-    let props = (Padding::all(20.), Gap::new(10.px()));
-    let grid_a = grid_a.with_props(props);
-    let grid_b = grid_b.with_props(props);
+    let props = (Padding::all(20.px()), Gap::new(10.px()));
+    let grid_a = grid_a.prepare().with_props(props);
+    let grid_b = grid_b.prepare().with_props(props);
 
     let mut root = ZStack::new();
     root = root.with(grid_a, ChildAlignment::ParentAligned);
     root = root.with(grid_b, ChildAlignment::ParentAligned);
 
-    let mut harness = TestHarness::create_with_size(
-        test_property_set(),
-        root.with_auto_id(),
-        Size::new(350., 80.),
-    );
+    let mut harness = TestHarness::create_with_size(test_property_set(), root.prepare(), (350, 80));
 
     assert_render_snapshot!(harness, "paint_transparency");
 }

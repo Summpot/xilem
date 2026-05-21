@@ -4,14 +4,14 @@
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::trace_span;
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ChildrenIds, CollectionWidget, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx,
     PropertiesRef, RegisterCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Rect, Size};
-use crate::layout::{LayoutSize, LenReq, SizeDef, UnitPoint};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef, UnitPoint};
 
 struct Child {
     widget: WidgetPod<dyn Widget>,
@@ -19,7 +19,7 @@ struct Child {
 }
 
 /// An option specifying how a child widget is aligned within a [`ZStack`].
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChildAlignment {
     /// Specifies that the child should use the global alignment as specified by the parent [`ZStack`] widget.
     ParentAligned,
@@ -218,12 +218,12 @@ impl Widget for ZStack {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
-        let mut length: f64 = 0.;
+        let mut length = Length::ZERO;
         for child in &mut self.children {
             let child_length = ctx.compute_length(
                 &mut child.widget,
@@ -271,7 +271,13 @@ impl Widget for ZStack {
         }
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         for child in self.children.iter_mut().map(|x| &mut x.widget) {
@@ -321,31 +327,29 @@ mod tests {
         let mut bg_props = PropertySet::new();
         bg_props.insert(Background::Color(palette::css::BLUE));
         bg_props.insert(BorderColor::new(palette::css::TEAL));
-        bg_props.insert(BorderWidth::all(2.0));
+        bg_props.insert(BorderWidth::all(2.px()));
 
         let mut fg_props = PropertySet::new();
         fg_props.insert(Background::Color(palette::css::RED));
         fg_props.insert(BorderColor::new(palette::css::PINK));
-        fg_props.insert(BorderWidth::all(2.0));
+        fg_props.insert(BorderWidth::all(2.px()));
 
         let widget = ZStack::new()
             .with(
-                NewWidget::new_with_props(
-                    SizedBox::new(Label::new("Background").with_auto_id())
+                NewWidget::new(
+                    SizedBox::new(Label::new("Background").prepare())
                         .width(200.px())
                         .height(100.px()),
-                    bg_props,
-                ),
+                )
+                .with_props(bg_props),
                 ChildAlignment::ParentAligned,
             )
             .with(
-                NewWidget::new_with_props(
-                    SizedBox::new(Label::new("Foreground").with_auto_id()),
-                    fg_props,
-                ),
+                NewWidget::new(SizedBox::new(Label::new("Foreground").prepare()))
+                    .with_props(fg_props),
                 ChildAlignment::ParentAligned,
             )
-            .with_auto_id();
+            .prepare();
 
         let mut harness = TestHarness::create(test_property_set(), widget);
         assert_render_snapshot!(harness, "zstack_alignment_default");
@@ -376,20 +380,14 @@ mod tests {
         let widget = ZStack::new()
             .with_alignment(UnitPoint::CENTER)
             .with(
-                Label::new("ParentAligned").with_auto_id(),
+                Label::new("ParentAligned").prepare(),
                 ChildAlignment::ParentAligned,
             )
-            .with(Label::new("TopLeft").with_auto_id(), UnitPoint::TOP_LEFT)
-            .with(Label::new("TopRight").with_auto_id(), UnitPoint::TOP_RIGHT)
-            .with(
-                Label::new("BottomLeft").with_auto_id(),
-                UnitPoint::BOTTOM_LEFT,
-            )
-            .with(
-                Label::new("BottomRight").with_auto_id(),
-                UnitPoint::BOTTOM_RIGHT,
-            )
-            .with_auto_id();
+            .with(Label::new("TopLeft").prepare(), UnitPoint::TOP_LEFT)
+            .with(Label::new("TopRight").prepare(), UnitPoint::TOP_RIGHT)
+            .with(Label::new("BottomLeft").prepare(), UnitPoint::BOTTOM_LEFT)
+            .with(Label::new("BottomRight").prepare(), UnitPoint::BOTTOM_RIGHT)
+            .prepare();
 
         let mut harness = TestHarness::create(test_property_set(), widget);
         assert_render_snapshot!(harness, "zstack_alignments_self_aligned");

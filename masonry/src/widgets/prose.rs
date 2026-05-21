@@ -4,15 +4,15 @@
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, AccessEvent, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, NewWidget, NoAction,
     PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update,
     UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::LenReq;
+use crate::layout::{LenReq, Length};
 use crate::widgets::TextArea;
 
 /// The prose widget displays immutable text which can be
@@ -47,7 +47,7 @@ impl Prose {
     ///
     /// To use non-default text properties, use [`from_text_area`](Self::from_text_area) instead.
     pub fn new(text: &str) -> Self {
-        Self::from_text_area(TextArea::new_immutable(text).with_auto_id())
+        Self::from_text_area(TextArea::new_immutable(text).prepare())
     }
 
     /// Creates a new `Prose` from a styled text area.
@@ -147,8 +147,8 @@ impl Widget for Prose {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         _len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         ctx.redirect_measurement(&mut self.text, axis, cross_length)
     }
 
@@ -165,7 +165,12 @@ impl Widget for Prose {
         }
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
         // All painting is handled by the child
     }
 
@@ -198,13 +203,11 @@ impl Widget for Prose {
 // TODO - Add more tests
 #[cfg(test)]
 mod tests {
-    use parley::StyleProperty;
-
     use super::*;
     use crate::TextAlign;
     use crate::core::PropertySet;
-    use crate::kurbo::Size;
     use crate::layout::AsUnit;
+    use crate::parley::StyleProperty;
     use crate::properties::Gap;
     use crate::properties::types::CrossAxisAlignment;
     use crate::testing::{TestHarness, assert_render_snapshot};
@@ -219,17 +222,17 @@ mod tests {
             TextArea::new_immutable("Truncated text - you should not see this")
                 .with_style(StyleProperty::FontSize(14.0))
                 .with_word_wrap(false)
-                .with_auto_id(),
+                .prepare(),
         )
         .with_clip(true)
-        .with_auto_id();
+        .prepare();
 
         let root_widget = Flex::row()
-            .with_fixed(SizedBox::new(prose).width(60.px()).with_auto_id())
-            .with_auto_id();
+            .with_fixed(SizedBox::new(prose).width(60.px()).prepare())
+            .prepare();
 
         let mut harness =
-            TestHarness::create_with_size(test_property_set(), root_widget, Size::new(200.0, 40.0));
+            TestHarness::create_with_size(test_property_set(), root_widget, (200, 40));
 
         assert_render_snapshot!(harness, "prose_clipping");
     }
@@ -245,7 +248,7 @@ mod tests {
                     .with_style(StyleProperty::FontSize(14.0))
                     .with_text_alignment(text_alignment)
                     .with_word_wrap(true)
-                    .with_auto_id(),
+                    .prepare(),
             )
         }
         let prose1 = base_prose(TextAlign::Start);
@@ -255,16 +258,15 @@ mod tests {
         let prose5 = base_prose(TextAlign::Center);
         let prose6 = base_prose(TextAlign::End);
         let flex = Flex::column()
-            .with(prose1.with_auto_id(), CrossAxisAlignment::Start)
-            .with(prose2.with_auto_id(), CrossAxisAlignment::Start)
-            .with(prose3.with_auto_id(), CrossAxisAlignment::Start)
-            .with(prose4.with_auto_id(), CrossAxisAlignment::Center)
-            .with(prose5.with_auto_id(), CrossAxisAlignment::Center)
-            .with(prose6.with_auto_id(), CrossAxisAlignment::Center);
-        let flex = NewWidget::new_with_props(flex, PropertySet::one(Gap::ZERO));
+            .with(prose1.prepare(), CrossAxisAlignment::Start)
+            .with(prose2.prepare(), CrossAxisAlignment::Start)
+            .with(prose3.prepare(), CrossAxisAlignment::Start)
+            .with(prose4.prepare(), CrossAxisAlignment::Center)
+            .with(prose5.prepare(), CrossAxisAlignment::Center)
+            .with(prose6.prepare(), CrossAxisAlignment::Center);
+        let flex = NewWidget::new(flex).with_props(PropertySet::one(Gap::ZERO));
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), flex, Size::new(200.0, 120.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), flex, (200, 120));
 
         assert_render_snapshot!(harness, "prose_alignment_flex");
     }

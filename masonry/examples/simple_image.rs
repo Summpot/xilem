@@ -44,7 +44,7 @@ pub fn make_image() -> NewWidget<Image> {
         height,
     };
 
-    NewWidget::new_with_props(Image::new(png_data), PropertySet::one(ObjectFit::Contain))
+    NewWidget::new(Image::new(png_data)).with_props(PropertySet::one(ObjectFit::Contain))
 }
 
 fn main() {
@@ -72,10 +72,10 @@ mod tests {
 
     #[test]
     fn screenshot_test() {
-        let mut test_params = TestHarnessParams::default();
         // The way that the anti-aliasing/bilinear filtering lines up in this test
         // makes the output image surprisingly large.
-        test_params.max_screenshot_size = 16 * TestHarnessParams::KIBIBYTE;
+        let test_params =
+            TestHarnessParams::default().with_max_screenshot_size(16 * TestHarnessParams::KIBIBYTE);
 
         let mut harness =
             TestHarness::create_with(default_property_set(), make_image(), test_params);

@@ -14,14 +14,15 @@ use masonry::core::{
     NoAction, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Widget,
     WidgetId,
 };
+use masonry::imaging::Painter;
 use masonry::kurbo::{Affine, Axis, BezPath, Point, Rect, Size, Stroke};
-use masonry::layout::LenReq;
-use masonry::parley::style::{FontFamily, FontStack, GenericFamily, StyleProperty};
-use masonry::peniko::{Color, Fill, ImageBrush, ImageFormat};
+use masonry::layout::{AsUnit, LenReq, Length};
+use masonry::parley::FontFamilyName;
+use masonry::parley::style::{FontFamily, GenericFamily, StyleProperty};
+use masonry::peniko::{Color, ImageBrush, ImageFormat};
 use masonry::peniko::{ImageAlphaType, ImageData};
 use masonry::properties::ObjectFit;
 use masonry::theme::default_property_set;
-use masonry::vello::Scene;
 use masonry::{TextAlign, TextAlignOptions, palette};
 use masonry_winit::app::{AppDriver, DriverCtx, NewWindow, WindowId};
 use masonry_winit::winit::window::Window;
@@ -79,16 +80,16 @@ impl Widget for CustomWidget {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
+        _cross_length: Option<Length>,
+    ) -> Length {
         // We currently just define our preferred min/max,
         // but often it takes actual work to derive these.
         let min_size = Size::new(100., 50.);
         let max_size = Size::new(200., 200.);
 
         // Measurement is per axis, so we only care about a single dimension right now
-        let min_length = min_size.get_coord(axis);
-        let max_length = max_size.get_coord(axis);
+        let min_length = min_size.get_coord(axis).px();
+        let max_length = max_size.get_coord(axis).px();
 
         // Return a result based on the parent's request
         match len_req {
@@ -105,18 +106,16 @@ impl Widget for CustomWidget {
     // The paint method gets called last, after an event flow.
     // It goes event -> update -> layout -> paint, and each method can influence the next.
     // Basically, anything that changes the appearance of a widget causes a paint.
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         // Clear the whole widget with the color of your choice
-        // (ctx.content_box_size() returns the size of the content rect we're painting in)
-        let size = ctx.content_box_size();
-        let rect = ctx.content_box();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            palette::css::WHITE,
-            None,
-            &rect,
-        );
+        let content_box = ctx.content_box();
+        let size = content_box.size();
+        painter.fill(content_box, palette::css::WHITE).draw();
 
         // Create an arbitrary bezier path
         let mut path = BezPath::new();
@@ -125,26 +124,22 @@ impl Widget for CustomWidget {
         // Create a color
         let stroke_color = Color::from_rgb8(0, 128, 0);
         // Stroke the path with thickness 5.0
-        scene.stroke(
-            &Stroke::new(5.0),
-            Affine::IDENTITY,
-            stroke_color,
-            None,
-            &path,
-        );
+        painter
+            .stroke(&path, &Stroke::new(5.0), stroke_color)
+            .draw();
 
         // Rectangles: the path for practical people
         let rect = Rect::from_origin_size((10.0, 10.0), (100.0, 100.0));
         // Note the Color:from_rgba8 which includes an alpha channel (7F in this case)
         let fill_color = Color::from_rgba8(0x00, 0x00, 0x00, 0x7F);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, fill_color, None, &rect);
+        painter.fill(rect, fill_color).draw();
 
         // To render text, we first create a text layout builder and then set the text properties.
         let (fcx, lcx) = ctx.text_contexts();
         let mut text_layout_builder = lcx.ranged_builder(fcx, &self.0, 1.0, true);
 
-        text_layout_builder.push_default(StyleProperty::FontStack(FontStack::Single(
-            FontFamily::Generic(GenericFamily::Serif),
+        text_layout_builder.push_default(StyleProperty::FontFamily(FontFamily::Single(
+            FontFamilyName::Generic(GenericFamily::Serif),
         )));
         text_layout_builder.push_default(StyleProperty::FontSize(24.0));
 
@@ -154,7 +149,7 @@ impl Widget for CustomWidget {
 
         // We can pass a transform matrix to rotate the text we render
         masonry::core::render_text(
-            scene,
+            painter,
             Affine::rotate(std::f64::consts::FRAC_PI_4).then_translate((80.0, 40.0).into()),
             &text_layout,
             &[fill_color.into()],
@@ -170,8 +165,8 @@ impl Widget for CustomWidget {
             width: 256,
             height: 256,
         });
-        let transform = ObjectFit::Stretch.affine(size, Size::new(256., 256.));
-        scene.draw_image(&image_data, transform);
+        let transform = ObjectFit::Stretch.affine(content_box, Rect::new(0., 0., 256., 256.));
+        painter.draw_image(&image_data, transform);
     }
 
     fn accessibility_role(&self) -> Role {
@@ -240,9 +235,9 @@ mod tests {
     fn screenshot_test() {
         let my_string = "Masonry + Vello".to_string();
 
-        let mut test_params = TestHarnessParams::default();
         // This is a screenshot of an example, so it being slightly larger than a normal test is expected.
-        test_params.max_screenshot_size = 16 * TestHarnessParams::KIBIBYTE;
+        let test_params =
+            TestHarnessParams::default().with_max_screenshot_size(16 * TestHarnessParams::KIBIBYTE);
 
         let mut harness = TestHarness::create_with(
             default_property_set(),

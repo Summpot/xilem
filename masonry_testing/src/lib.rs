@@ -44,15 +44,22 @@
 //! For repositories hosted on GitHub, this scheme also allows for including screenshots of your app or
 //! widgets in hosted documentation, although we haven't documented this publicly yet.
 //!
+//! # Feature flags
+//!
+//! Screenshot rendering is backend-driven:
+//!
+//! - `default`: Enables screenshot rendering via `imaging_vello`.
+//! - `imaging_vello`: Enables screenshot rendering via `imaging_vello`.
+//! - `imaging_vello_hybrid`: Enables screenshot rendering via `imaging_vello_hybrid`.
+//! - `imaging_vello_cpu`: Enables screenshot rendering via `imaging_vello_cpu`.
+//! - `imaging_skia`: Enables screenshot rendering via `imaging_skia`.
+//!
 //! # Examples
 //!
 //! For examples of this crate in use
 //!
 //! - To test applications: see the tests in Masonry's examples.
 //! - To test widgets: see the `tests` module in each widget in Masonry.
-
-// TODO: Remove any items listed as "Deferred"
-#![expect(missing_debug_implementations, reason = "Deferred: Noisy")]
 
 mod assert_any;
 mod assert_debug_panics;

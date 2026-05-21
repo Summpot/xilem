@@ -4,17 +4,17 @@
 use std::sync::mpsc;
 
 use assert_matches::assert_matches;
-use masonry_testing::{
-    DebugName, ModularWidget, PRIMARY_MOUSE, Record, TestHarness, TestWidgetExt, assert_any,
-    assert_debug_panics,
-};
 
-use crate::core::pointer::{PointerButton, PointerEvent};
+use crate::core::pointer::PointerEvent;
 use crate::core::{
     CursorIcon, Ime, NewWidget, PropertySet, TextEvent, Update, Widget, WidgetId, WidgetPod,
     WidgetTag,
 };
-use crate::layout::Length;
+use crate::layout::{AsUnit, Length};
+use crate::testing::{
+    DebugName, ModularWidget, PRIMARY_MOUSE, Record, TestHarness, TestWidgetExt, assert_any,
+    assert_debug_panics,
+};
 use crate::theme::test_property_set;
 use crate::widgets::{Button, Flex, Label, SizedBox, TextArea};
 
@@ -23,7 +23,7 @@ use crate::widgets::{Button, Flex, Label, SizedBox, TextArea};
 #[test]
 fn app_creation() {
     let widget_tag = WidgetTag::named("widget");
-    let widget = NewWidget::new_with_tag(SizedBox::empty().record(), widget_tag);
+    let widget = NewWidget::new(SizedBox::empty().record()).with_tag(widget_tag);
 
     let harness = TestHarness::create(test_property_set(), widget);
 
@@ -51,7 +51,7 @@ fn new_widget() {
 
     let widget_tag = WidgetTag::named("widget");
     harness.edit_root_widget(|mut flex| {
-        let widget = NewWidget::new_with_tag(SizedBox::empty().record(), widget_tag);
+        let widget = NewWidget::new(SizedBox::empty().record()).with_tag(widget_tag);
 
         Flex::add_fixed(&mut flex, widget);
     });
@@ -67,11 +67,11 @@ fn new_widget() {
 
 #[test]
 fn forget_register_child() {
-    let widget = ModularWidget::new_parent(Flex::row().with_auto_id())
+    let widget = ModularWidget::new_parent(Flex::row().prepare())
         .register_children_fn(|_child, _ctx| {
             // We forget to call ctx.register_child();
         })
-        .with_auto_id();
+        .prepare();
 
     assert_debug_panics!(
         TestHarness::create(test_property_set(), widget),
@@ -81,12 +81,12 @@ fn forget_register_child() {
 
 #[test]
 fn register_invalid_child() {
-    let widget = ModularWidget::new_parent(Flex::row().with_auto_id())
+    let widget = ModularWidget::new_parent(Flex::row().prepare())
         .register_children_fn(|child, ctx| {
             ctx.register_child(child);
             ctx.register_child(&mut WidgetPod::new(Flex::row()));
         })
-        .with_auto_id();
+        .prepare();
 
     assert_debug_panics!(
         TestHarness::create(test_property_set(), widget),
@@ -100,8 +100,8 @@ fn register_invalid_child() {
 fn disabled_widget_gets_no_event() {
     let button_tag = WidgetTag::named("button");
     let parent_tag = WidgetTag::named("parent");
-    let child = NewWidget::new_with_tag(Button::with_text("").record(), button_tag);
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(child), parent_tag);
+    let child = NewWidget::new(Button::with_text("Click me").record()).with_tag(button_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(child)).with_tag(parent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), parent);
     let button_id = harness.get_widget(button_tag).id();
@@ -118,7 +118,7 @@ fn disabled_widget_gets_no_event() {
         ]
     );
 
-    harness.mouse_click_on(button_id);
+    harness.mouse_click_on(button_id, None);
     assert_matches!(harness.take_records_of(button_tag)[..], []);
 
     assert_matches!(harness.focused_widget_id(), None);
@@ -131,9 +131,9 @@ fn disable_parent() {
     let button_tag = WidgetTag::named("button");
     let parent_tag = WidgetTag::named("parent");
     let grandparent_tag = WidgetTag::named("grandparent_tag");
-    let child = NewWidget::new_with_tag(Button::with_text("").record(), button_tag);
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(child), parent_tag);
-    let grandparent = NewWidget::new_with_tag(ModularWidget::new_parent(parent), grandparent_tag);
+    let child = NewWidget::new(Button::with_text("").record()).with_tag(button_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(child)).with_tag(parent_tag);
+    let grandparent = NewWidget::new(ModularWidget::new_parent(parent)).with_tag(grandparent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), grandparent);
     harness.flush_records_of(button_tag);
@@ -175,8 +175,8 @@ fn disable_parent() {
 fn stashed_widget_loses_focus() {
     let button_tag = WidgetTag::named("button");
     let parent_tag = WidgetTag::named("parent");
-    let child = NewWidget::new_with_tag(Button::with_text("").record(), button_tag);
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(child), parent_tag);
+    let child = NewWidget::new(Button::with_text("").record()).with_tag(button_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(child)).with_tag(parent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), parent);
     let button_id = harness.get_widget(button_tag).id();
@@ -205,9 +205,9 @@ fn stash_parent() {
     let button_tag = WidgetTag::named("button");
     let parent_tag = WidgetTag::named("parent");
     let grandparent_tag = WidgetTag::named("grandparent_tag");
-    let child = NewWidget::new_with_tag(Button::with_text("").record(), button_tag);
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(child), parent_tag);
-    let grandparent = NewWidget::new_with_tag(ModularWidget::new_parent(parent), grandparent_tag);
+    let child = NewWidget::new(Button::with_text("").record()).with_tag(button_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(child)).with_tag(parent_tag);
+    let grandparent = NewWidget::new(ModularWidget::new_parent(parent)).with_tag(grandparent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), grandparent);
     harness.flush_records_of(button_tag);
@@ -259,20 +259,16 @@ fn stash_parent() {
 // FOCUSABLE
 
 fn focusable_child(name: &'static str) -> NewWidget<impl Widget> {
-    NewWidget::new_with_props(
-        ModularWidget::new(()).accepts_focus(true),
-        PropertySet::one(DebugName(name.to_string())),
-    )
+    NewWidget::new(ModularWidget::new(()).accepts_focus(true))
+        .with_props(PropertySet::one(DebugName(name.to_string())))
 }
 
 fn focusable_parent(
     name: &'static str,
     children: Vec<NewWidget<impl Widget + ?Sized>>,
 ) -> NewWidget<impl Widget> {
-    NewWidget::new_with_props(
-        ModularWidget::new_multi_parent(children).accepts_focus(true),
-        PropertySet::one(DebugName(name.to_string())),
-    )
+    NewWidget::new(ModularWidget::new_multi_parent(children).accepts_focus(true))
+        .with_props(PropertySet::one(DebugName(name.to_string())))
 }
 
 #[test]
@@ -385,9 +381,9 @@ fn disable_focusable() {
     let button2_tag = WidgetTag::named("button2");
     let button3_tag = WidgetTag::named("button3");
 
-    let button1 = NewWidget::new_with_tag(Button::with_text(""), button1_tag);
-    let button2 = NewWidget::new_with_tag(Button::with_text(""), button2_tag);
-    let button3 = NewWidget::new_with_tag(Button::with_text(""), button3_tag);
+    let button1 = NewWidget::new(Button::with_text("")).with_tag(button1_tag);
+    let button2 = NewWidget::new(Button::with_text("")).with_tag(button2_tag);
+    let button3 = NewWidget::new(Button::with_text("")).with_tag(button3_tag);
 
     let parent = NewWidget::new(ModularWidget::new_multi_parent(vec![
         button1, button2, button3,
@@ -418,9 +414,9 @@ fn stash_focusable() {
     let button2_tag = WidgetTag::named("button2");
     let button3_tag = WidgetTag::named("button3");
 
-    let button1 = NewWidget::new_with_tag(Button::with_text(""), button1_tag);
-    let button2 = NewWidget::new_with_tag(Button::with_text(""), button2_tag);
-    let button3 = NewWidget::new_with_tag(Button::with_text(""), button3_tag);
+    let button1 = NewWidget::new(Button::with_text("")).with_tag(button1_tag);
+    let button2 = NewWidget::new(Button::with_text("")).with_tag(button2_tag);
+    let button3 = NewWidget::new(Button::with_text("")).with_tag(button3_tag);
 
     let parent = NewWidget::new(ModularWidget::new_multi_parent(vec![
         button1, button2, button3,
@@ -454,9 +450,9 @@ fn remove_focusable() {
     let button2_tag = WidgetTag::named("button2");
     let button3_tag = WidgetTag::named("button3");
 
-    let button1 = NewWidget::new_with_tag(Button::with_text(""), button1_tag);
-    let button2 = NewWidget::new_with_tag(Button::with_text(""), button2_tag);
-    let button3 = NewWidget::new_with_tag(Button::with_text(""), button3_tag);
+    let button1 = NewWidget::new(Button::with_text("")).with_tag(button1_tag);
+    let button2 = NewWidget::new(Button::with_text("")).with_tag(button2_tag);
+    let button3 = NewWidget::new(Button::with_text("")).with_tag(button3_tag);
 
     let parent = NewWidget::new(ModularWidget::new_multi_parent(vec![
         button1, button2, button3,
@@ -489,7 +485,7 @@ fn remove_focusable() {
 #[test]
 fn ime_commit() {
     let textbox_tag = WidgetTag::named("textbox");
-    let textbox = NewWidget::new_with_tag(TextArea::new_editable(""), textbox_tag);
+    let textbox = NewWidget::new(TextArea::new_editable("")).with_tag(textbox_tag);
 
     let mut harness = TestHarness::create(test_property_set(), textbox);
     let textbox_id = harness.get_widget(textbox_tag).id();
@@ -509,7 +505,7 @@ fn ime_commit() {
 #[test]
 fn ime_removed() {
     let textbox_tag = WidgetTag::named("textbox");
-    let textbox = NewWidget::new_with_tag(TextArea::new_editable(""), textbox_tag);
+    let textbox = NewWidget::new(TextArea::new_editable("")).with_tag(textbox_tag);
     let parent = NewWidget::new(SizedBox::new(textbox));
 
     let mut harness = TestHarness::create(test_property_set(), parent);
@@ -528,7 +524,7 @@ fn ime_removed() {
 #[test]
 fn ime_start_stop() {
     let textbox_tag = WidgetTag::named("textbox");
-    let textbox = NewWidget::new_with_tag(TextArea::new_editable("").record(), textbox_tag);
+    let textbox = NewWidget::new(TextArea::new_editable("").record()).with_tag(textbox_tag);
     let parent = NewWidget::new(ModularWidget::new_parent(textbox));
 
     let mut harness = TestHarness::create(test_property_set(), parent);
@@ -561,14 +557,14 @@ fn create_icon_widget() -> ModularWidget<()> {
             }
         })
         .cursor_icon(CursorIcon::Crosshair)
-        .measure_fn(|_, _, _, _, _, _| 10.)
+        .measure_fn(|_, _, _, _, _, _| 10.px())
 }
 
 #[test]
 fn cursor_icon() {
     let icon_tag = WidgetTag::named("icon");
     let label = NewWidget::new(Button::with_text("hello"));
-    let icon_widget = NewWidget::new_with_tag(create_icon_widget(), icon_tag);
+    let icon_widget = NewWidget::new(create_icon_widget()).with_tag(icon_tag);
     let parent = NewWidget::new(Flex::row().with_fixed(label).with_fixed(icon_widget));
 
     let mut harness = TestHarness::create(test_property_set(), parent);
@@ -584,8 +580,8 @@ fn cursor_icon() {
 fn pointer_capture_affects_pointer_icon() {
     let label_tag = WidgetTag::named("label");
     let icon_tag = WidgetTag::named("icon");
-    let label = NewWidget::new_with_tag(Button::with_text("hello"), label_tag);
-    let icon_widget = NewWidget::new_with_tag(create_icon_widget(), icon_tag);
+    let label = NewWidget::new(Button::with_text("hello")).with_tag(label_tag);
+    let icon_widget = NewWidget::new(create_icon_widget()).with_tag(icon_tag);
     let parent = NewWidget::new(Flex::row().with_fixed(label).with_fixed(icon_widget));
 
     let mut harness = TestHarness::create(test_property_set(), parent);
@@ -593,14 +589,14 @@ fn pointer_capture_affects_pointer_icon() {
     let label_id = harness.get_widget(label_tag).id();
 
     harness.mouse_move_to(icon_id);
-    harness.mouse_button_press(PointerButton::Primary);
+    harness.mouse_button_press(None);
     assert_eq!(harness.cursor_icon(), CursorIcon::Crosshair);
 
     // We keep the Crosshair icon as long as the pointer stays captured.
     harness.mouse_move_to(label_id);
     assert_eq!(harness.cursor_icon(), CursorIcon::Crosshair);
 
-    harness.mouse_button_release(PointerButton::Primary);
+    harness.mouse_button_release(None);
     assert_eq!(harness.cursor_icon(), CursorIcon::Default);
 }
 
@@ -608,7 +604,7 @@ fn pointer_capture_affects_pointer_icon() {
 fn lose_hovered_on_pointer_leave_or_cancel() {
     let button_tag = WidgetTag::named("button");
 
-    let button = NewWidget::new_with_tag(Button::with_text("button").record(), button_tag);
+    let button = NewWidget::new(Button::with_text("button").record()).with_tag(button_tag);
 
     let mut harness = TestHarness::create(test_property_set(), button);
     let button_id = harness.get_widget(button_tag).id();
@@ -651,14 +647,12 @@ fn change_hovered_when_widget_changes() {
     let child_tag = WidgetTag::named("child");
     let parent_tag = WidgetTag::named("parent");
 
-    let child = NewWidget::new_with_tag(
-        ModularWidget::new(BOX_SIZE).measure_fn(|size, _, _, _, _, _| size.get()),
-        child_tag,
-    );
-    let parent = NewWidget::new_with_tag(
-        ModularWidget::new_parent(child).measure_fn(|_, _, _, _, _, _| BOX_SIZE.get()),
-        parent_tag,
-    );
+    let child =
+        NewWidget::new(ModularWidget::new(BOX_SIZE).measure_fn(|size, _, _, _, _, _| *size))
+            .with_tag(child_tag);
+    let parent =
+        NewWidget::new(ModularWidget::new_parent(child).measure_fn(|_, _, _, _, _, _| BOX_SIZE))
+            .with_tag(parent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), parent);
     let child_id = harness.get_widget(child_tag).id();
@@ -702,7 +696,7 @@ fn make_reporter_parent(
                 ctx.set_handled();
             }
         })
-        .measure_fn(|_, _, _, _, _, _| 100.)
+        .measure_fn(|_, _, _, _, _, _| 100.px())
         .update_fn(move |_, _, _, event| {
             sender.send((event.short_name().to_string(), n)).unwrap();
         })
@@ -718,7 +712,7 @@ fn status_flag_update_order() {
     let parent1_tag = WidgetTag::named("parent1");
 
     let child = NewWidget::new(Label::new(""));
-    let parent1 = NewWidget::new_with_tag(make_reporter_parent(child, sender1, 1), parent1_tag);
+    let parent1 = NewWidget::new(make_reporter_parent(child, sender1, 1)).with_tag(parent1_tag);
     let parent2 = NewWidget::new(make_reporter_parent(parent1, sender2, 2));
     let parent3 = NewWidget::new(make_reporter_parent(parent2, sender3, 3));
 
@@ -741,7 +735,7 @@ fn status_flag_update_order() {
     assert!(harness.get_widget(parent1_tag).ctx().is_hovered());
     assert!(harness.get_widget(parent1_tag).ctx().has_hovered());
 
-    harness.mouse_button_press(PointerButton::Primary);
+    harness.mouse_button_press(None);
     let events: Vec<_> = receiver.try_iter().collect();
     assert_eq!(
         events,
@@ -755,7 +749,7 @@ fn status_flag_update_order() {
     assert!(harness.get_widget(parent1_tag).ctx().is_active());
     assert!(harness.get_widget(parent1_tag).ctx().has_active());
 
-    harness.mouse_button_release(PointerButton::Primary);
+    harness.mouse_button_release(None);
     let events: Vec<_> = receiver.try_iter().collect();
     assert_eq!(
         events,

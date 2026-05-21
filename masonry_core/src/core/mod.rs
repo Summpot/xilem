@@ -3,14 +3,20 @@
 
 //! Basic types and traits Masonry is built on.
 
+mod class_set;
 mod contexts;
 mod default_properties;
 mod events;
 mod layer;
+mod paint_layer;
 mod properties_mut;
 mod properties_ref;
 mod property;
+mod property_arena;
+mod property_cache;
 mod property_set;
+mod property_stack;
+mod selector;
 mod text;
 mod widget;
 mod widget_arena;
@@ -25,10 +31,15 @@ pub use contexts::*;
 pub use default_properties::*;
 pub use events::*;
 pub use layer::*;
+pub use paint_layer::*;
 pub use properties_mut::*;
 pub use properties_ref::*;
 pub use property::*;
+pub use property_arena::*;
+pub use property_cache::*;
 pub use property_set::*;
+pub use property_stack::*;
+pub use selector::*;
 pub use text::*;
 pub use widget::*;
 pub use widget_mut::*;
@@ -45,6 +56,7 @@ pub use ui_events::pointer::{
 };
 pub use ui_events::{ScrollDelta, keyboard, pointer};
 
+pub(crate) use class_set::*;
 pub(crate) use widget_arena::*;
 pub(crate) use widget_state::*;
 

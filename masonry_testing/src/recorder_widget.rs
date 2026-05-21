@@ -8,6 +8,11 @@
 //! Note: Some of these types are undocumented. They're meant to help maintainers of
 //! Masonry, not to be user-facing.
 
+#![expect(
+    missing_debug_implementations,
+    reason = "Widgets are not expected to implement Debug"
+)]
+
 use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -15,13 +20,13 @@ use std::rc::Rc;
 
 use masonry_core::accesskit::{Node, Role};
 use masonry_core::core::{
-    AccessCtx, AccessEvent, ChildrenIds, ComposeCtx, CursorIcon, EventCtx, Layer, LayoutCtx,
-    MeasureCtx, NewWidget, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, PropertySet,
+    AccessCtx, AccessEvent, ActionCtx, ChildrenIds, ComposeCtx, CursorIcon, ErasedAction, EventCtx,
+    Layer, LayoutCtx, MeasureCtx, NewWidget, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef,
     QueryCtx, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetId, WidgetRef,
 };
+use masonry_core::imaging::Painter;
 use masonry_core::kurbo::{Axis, Point, Size};
-use masonry_core::layout::LenReq;
-use masonry_core::vello::Scene;
+use masonry_core::layout::{LenReq, Length};
 
 // TODO - Re-enable doc test.
 // Doc test is currently disabled because it depends on a parent crate.
@@ -71,6 +76,8 @@ pub enum Record {
     AccessEvent(AccessEvent),
     /// Animation frame.
     AnimFrame(u64),
+    /// Action.
+    Action((String, WidgetId)),
     /// Register children
     RegisterChildren,
     /// Update
@@ -78,7 +85,7 @@ pub enum Record {
     /// Property change.
     PropertyChange(TypeId),
     /// Measure. Records the length returned by the measure method.
-    Measure(f64),
+    Measure(Length),
     /// Layout. Records the size given to the layout method.
     Layout(Size),
     /// Compose.
@@ -195,6 +202,18 @@ impl<W: Widget> Widget for Recorder<W> {
         self.child.on_anim_frame(ctx, props, interval);
     }
 
+    fn on_action(
+        &mut self,
+        ctx: &mut ActionCtx<'_>,
+        props: &mut PropertiesMut<'_>,
+        action: &ErasedAction,
+        source: WidgetId,
+    ) {
+        self.recording
+            .push(Record::Action((action.type_name().into(), source)));
+        self.child.on_action(ctx, props, action, source);
+    }
+
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         self.recording.push(Record::RegisterChildren);
         self.child.register_children(ctx);
@@ -216,8 +235,8 @@ impl<W: Widget> Widget for Recorder<W> {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let length = self.child.measure(ctx, props, axis, len_req, cross_length);
         self.recording.push(Record::Measure(length));
         length
@@ -233,19 +252,34 @@ impl<W: Widget> Widget for Recorder<W> {
         self.child.compose(ctx);
     }
 
-    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn pre_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         self.recording.push(Record::PrePaint);
-        self.child.pre_paint(ctx, props, scene);
+        self.child.pre_paint(ctx, props, painter);
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         self.recording.push(Record::Paint);
-        self.child.paint(ctx, props, scene);
+        self.child.paint(ctx, props, painter);
     }
 
-    fn post_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn post_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         self.recording.push(Record::PostPaint);
-        self.child.post_paint(ctx, props, scene);
+        self.child.post_paint(ctx, props, painter);
     }
 
     fn accessibility_role(&self) -> Role {
@@ -314,17 +348,10 @@ impl<W: Widget> Widget for Recorder<W> {
         "Recorder"
     }
 
-    fn with_auto_id(self) -> NewWidget<Self>
+    fn prepare(self) -> NewWidget<Self>
     where
         Self: Sized,
     {
         NewWidget::new(self)
-    }
-
-    fn with_props(self, props: impl Into<PropertySet>) -> NewWidget<Self>
-    where
-        Self: Sized,
-    {
-        NewWidget::new_with_props(self, props)
     }
 }

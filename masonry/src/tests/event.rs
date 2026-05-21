@@ -1,9 +1,8 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use accesskit::ActionRequest;
+use accesskit::{ActionRequest, TreeId};
 use assert_matches::assert_matches;
-use dpi::PhysicalPosition;
 
 use crate::core::keyboard::{Key, NamedKey};
 use crate::core::pointer::{PointerButton, PointerEvent, PointerInfo, PointerType};
@@ -11,6 +10,7 @@ use crate::core::{
     AccessEvent, NewWidget, PointerButtonEvent, PointerId, PointerState, PointerUpdate, TextEvent,
     Update, Widget, WidgetId, WidgetTag,
 };
+use crate::dpi::PhysicalPosition;
 use crate::kurbo::Point;
 use crate::layout::AsUnit;
 use crate::testing::{
@@ -28,14 +28,14 @@ fn create_capture_target() -> ModularWidget<()> {
                 ctx.capture_pointer();
             }
         })
-        .measure_fn(|_, _, _, _, _, _| 10.)
+        .measure_fn(|_, _, _, _, _, _| 10.px())
 }
 
 #[test]
 fn pointer_event() {
     let button_tag = WidgetTag::named("button");
 
-    let button = NewWidget::new_with_tag(Button::with_text("button").record(), button_tag);
+    let button = NewWidget::new(Button::with_text("button").record()).with_tag(button_tag);
 
     let mut harness = TestHarness::create(test_property_set(), button);
     let button_id = harness.get_widget(button_tag).id();
@@ -55,16 +55,16 @@ fn pointer_event_bubbling() {
     let parent_tag = WidgetTag::named("parent");
     let grandparent_tag = WidgetTag::named("grandparent");
 
-    let button = NewWidget::new_with_tag(Button::with_text("button").record(), button_tag);
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(button).record(), parent_tag);
+    let button = NewWidget::new(Button::with_text("button").record()).with_tag(button_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(button).record()).with_tag(parent_tag);
     let grandparent =
-        NewWidget::new_with_tag(ModularWidget::new_parent(parent).record(), grandparent_tag);
+        NewWidget::new(ModularWidget::new_parent(parent).record()).with_tag(grandparent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), grandparent);
     let button_id = harness.get_widget(button_tag).id();
 
     harness.flush_records_of(button_tag);
-    harness.mouse_click_on(button_id);
+    harness.mouse_click_on(button_id, None);
 
     fn is_pointer_down(record: Record) -> bool {
         matches!(record, Record::PointerEvent(PointerEvent::Down { .. }))
@@ -80,14 +80,14 @@ fn pointer_capture_and_cancel() {
     let target_tag = WidgetTag::named("target");
 
     let target = create_capture_target();
-    let target = NewWidget::new_with_tag(target, target_tag);
+    let target = NewWidget::new(target).with_tag(target_tag);
 
     let mut harness = TestHarness::create(test_property_set(), target);
 
     let target_id = harness.get_widget(target_tag).id();
 
     harness.mouse_move_to(target_id);
-    harness.mouse_button_press(PointerButton::Primary);
+    harness.mouse_button_press(None);
     assert_eq!(harness.pointer_capture_target_id(), Some(target_id));
 
     harness.process_pointer_event(PointerEvent::Cancel(PointerInfo {
@@ -103,14 +103,14 @@ fn synthetic_cancel() {
     let target_tag = WidgetTag::named("target");
 
     let target = create_capture_target();
-    let target = NewWidget::new_with_tag(target.record(), target_tag);
+    let target = NewWidget::new(target.record()).with_tag(target_tag);
 
     let mut harness = TestHarness::create(test_property_set(), target);
 
     let target_id = harness.get_widget(target_tag).id();
 
     harness.mouse_move_to(target_id);
-    harness.mouse_button_press(PointerButton::Primary);
+    harness.mouse_button_press(None);
     assert_eq!(harness.pointer_capture_target_id(), Some(target_id));
 
     // When we disable a widget with pointer capture, it gets a
@@ -129,15 +129,15 @@ fn pointer_capture_suppresses_neighbors() {
     let other_tag = WidgetTag::named("other");
 
     let target = create_capture_target();
-    let target = NewWidget::new_with_tag(target, target_tag);
+    let target = NewWidget::new(target).with_tag(target_tag);
 
-    let other = Button::with_text("");
-    let other = NewWidget::new_with_tag(other.record(), other_tag);
+    let other = Button::with_text("Hello");
+    let other = NewWidget::new(other.record()).with_tag(other_tag);
 
     let parent = Flex::column()
         .with_fixed(target)
         .with_fixed(other)
-        .with_auto_id();
+        .prepare();
 
     let mut harness = TestHarness::create(test_property_set(), parent);
     harness.flush_records_of(other_tag);
@@ -146,7 +146,7 @@ fn pointer_capture_suppresses_neighbors() {
     let other_id = harness.get_widget(other_tag).id();
 
     harness.mouse_move_to(target_id);
-    harness.mouse_button_press(PointerButton::Primary);
+    harness.mouse_button_press(None);
 
     assert_eq!(harness.pointer_capture_target_id(), Some(target_id));
 
@@ -158,7 +158,7 @@ fn pointer_capture_suppresses_neighbors() {
     assert!(!harness.get_widget(other_tag).ctx().is_hovered());
 
     // We end pointer capture.
-    harness.mouse_button_release(PointerButton::Primary);
+    harness.mouse_button_release(None);
     assert_eq!(harness.pointer_capture_target_id(), None);
 
     // Once the capture is released, 'other' should immediately register as hovered.
@@ -171,7 +171,7 @@ fn try_capture_pointer_on_pointer_move() {
         .pointer_event_fn(|_, ctx, _, _event| {
             ctx.capture_pointer();
         })
-        .with_auto_id();
+        .prepare();
 
     let mut harness = TestHarness::create(test_property_set(), widget);
 
@@ -188,7 +188,7 @@ fn try_capture_pointer_on_text_event() {
         .text_event_fn(|_, ctx, _, _event| {
             ctx.capture_pointer();
         })
-        .with_auto_id();
+        .prepare();
 
     let mut harness = TestHarness::create(test_property_set(), widget);
     let id = harness.root_id();
@@ -205,14 +205,14 @@ fn pointer_cancel_on_window_blur() {
     let target_tag = WidgetTag::named("target");
 
     let target = create_capture_target();
-    let target = NewWidget::new_with_tag(target.record(), target_tag);
+    let target = NewWidget::new(target.record()).with_tag(target_tag);
 
     let mut harness = TestHarness::create(test_property_set(), target);
 
     let target_id = harness.get_widget(target_tag).id();
 
     harness.mouse_move_to(target_id);
-    harness.mouse_button_press(PointerButton::Primary);
+    harness.mouse_button_press(None);
     assert_eq!(harness.pointer_capture_target_id(), Some(target_id));
     harness.flush_records_of(target_tag);
 
@@ -231,19 +231,13 @@ fn click_anchors_focus() {
     let other = WidgetTag::named("other");
 
     let parent = Flex::column()
-        .with_fixed(NewWidget::new_with_tag(
-            SizedBox::empty().size(5.px(), 5.px()),
-            other,
-        ))
+        .with_fixed(NewWidget::new(SizedBox::empty().size(5.px(), 5.px())).with_tag(other))
         .with_fixed(NewWidget::new(Button::with_text("")))
         .with_fixed(NewWidget::new(Button::with_text("")))
-        .with_fixed(NewWidget::new_with_tag(
-            Button::with_text("Click me!"),
-            child_3,
-        ))
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_4))
+        .with_fixed(NewWidget::new(Button::with_text("Click me!")).with_tag(child_3))
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_4))
         .with_fixed(NewWidget::new(Button::with_text("")))
-        .with_auto_id();
+        .prepare();
 
     let mut harness = TestHarness::create(test_property_set(), parent);
 
@@ -253,7 +247,7 @@ fn click_anchors_focus() {
 
     // Clicking a disabled button doesn't focus it.
     harness.set_disabled(child_3, true);
-    harness.mouse_click_on(child_3_id);
+    harness.mouse_click_on(child_3_id, None);
     assert_eq!(harness.focused_widget_id(), None);
 
     // But the next tab event focuses its neighbor.
@@ -266,8 +260,8 @@ fn click_anchors_focus() {
 
     // Clicking another non-focusable widget clears focus.
     harness.mouse_move_to_unchecked(other_id);
-    harness.mouse_button_press(PointerButton::Primary);
-    harness.mouse_button_release(PointerButton::Primary);
+    harness.mouse_button_press(None);
+    harness.mouse_button_release(None);
     assert_eq!(harness.focused_widget_id(), None);
 }
 
@@ -328,16 +322,16 @@ fn multi_pointers_hover() {
     let button_2_tag = WidgetTag::named("button_2");
     let flex_tag = WidgetTag::named("flex");
 
-    let button_1 = NewWidget::new_with_tag(Button::with_text("Button 1").record(), button_1_tag);
-    let button_2 = NewWidget::new_with_tag(Button::with_text("Button 2").record(), button_2_tag);
+    let button_1 = NewWidget::new(Button::with_text("Button 1").record()).with_tag(button_1_tag);
+    let button_2 = NewWidget::new(Button::with_text("Button 2").record()).with_tag(button_2_tag);
 
-    let flex = NewWidget::new_with_tag(
+    let flex = NewWidget::new(
         Flex::row()
             .with_fixed(button_1)
             .with_fixed(button_2)
             .record(),
-        flex_tag,
-    );
+    )
+    .with_tag(flex_tag);
     let mut harness = TestHarness::create(test_property_set(), flex);
 
     let button_1_rect = harness.get_widget(button_1_tag).ctx().bounding_box();
@@ -412,16 +406,16 @@ fn multi_pointers_capture() {
     let button_2_tag = WidgetTag::named("button_2");
     let flex_tag = WidgetTag::named("flex");
 
-    let button_1 = NewWidget::new_with_tag(Button::with_text("Button 1").record(), button_1_tag);
-    let button_2 = NewWidget::new_with_tag(Button::with_text("Button 2").record(), button_2_tag);
+    let button_1 = NewWidget::new(Button::with_text("Button 1").record()).with_tag(button_1_tag);
+    let button_2 = NewWidget::new(Button::with_text("Button 2").record()).with_tag(button_2_tag);
 
-    let flex = NewWidget::new_with_tag(
+    let flex = NewWidget::new(
         Flex::row()
             .with_fixed(button_1)
             .with_fixed(button_2)
             .record(),
-        flex_tag,
-    );
+    )
+    .with_tag(flex_tag);
     let mut harness = TestHarness::create(test_property_set(), flex);
 
     let button_1_rect = harness.get_widget(button_1_tag).ctx().bounding_box();
@@ -440,7 +434,7 @@ fn multi_pointers_capture() {
     // Move mouse to button 1, mouse press
     // Check mouse is captured, button 1 is active
     harness.mouse_move_to(button_1_id);
-    harness.mouse_button_press(PointerButton::Primary);
+    harness.mouse_button_press(None);
 
     assert_captured_by(&harness, PointerId::PRIMARY, button_1_id);
     assert!(harness.get_widget(button_1_tag).ctx().is_active());
@@ -487,7 +481,7 @@ fn multi_pointers_capture() {
 fn text_event() {
     let target_tag = WidgetTag::named("target");
 
-    let target = NewWidget::new_with_tag(TextArea::new_editable("").record(), target_tag);
+    let target = NewWidget::new(TextArea::new_editable("").record()).with_tag(target_tag);
 
     let mut harness = TestHarness::create(test_property_set(), target);
     let target_id = harness.get_widget(target_tag).id();
@@ -510,13 +504,11 @@ fn text_event_bubbling() {
     let parent_tag = WidgetTag::named("parent");
     let grandparent_tag = WidgetTag::named("grandparent");
 
-    let target = NewWidget::new_with_tag(
-        ModularWidget::new(()).accepts_focus(true).record(),
-        target_tag,
-    );
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(target).record(), parent_tag);
+    let target =
+        NewWidget::new(ModularWidget::new(()).accepts_focus(true).record()).with_tag(target_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(target).record()).with_tag(parent_tag);
     let grandparent =
-        NewWidget::new_with_tag(ModularWidget::new_parent(parent).record(), grandparent_tag);
+        NewWidget::new(ModularWidget::new_parent(parent).record()).with_tag(grandparent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), grandparent);
     let target_id = harness.get_widget(target_tag).id();
@@ -538,12 +530,9 @@ fn text_event_fallback() {
     let target_tag = WidgetTag::named("target");
     let other_tag = WidgetTag::named("other");
 
-    let target = NewWidget::new_with_tag(TextArea::new_editable("").record(), target_tag);
-    let other = NewWidget::new_with_tag(TextArea::new_editable(""), other_tag);
-    let parent = Flex::row()
-        .with_fixed(target)
-        .with_fixed(other)
-        .with_auto_id();
+    let target = NewWidget::new(TextArea::new_editable("").record()).with_tag(target_tag);
+    let other = NewWidget::new(TextArea::new_editable("")).with_tag(other_tag);
+    let parent = Flex::row().with_fixed(target).with_fixed(other).prepare();
 
     let mut harness = TestHarness::create(test_property_set(), parent);
     let target_id = harness.get_widget(target_tag).id();
@@ -576,12 +565,12 @@ fn tab_focus() {
     let child_5 = WidgetTag::named("child_5");
 
     let parent = Flex::column()
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_1))
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_2))
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_3))
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_4))
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_5))
-        .with_auto_id();
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_1))
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_2))
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_3))
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_4))
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_5))
+        .prepare();
 
     let mut harness = TestHarness::create(test_property_set(), parent);
 
@@ -622,10 +611,10 @@ fn access_event_bubbling() {
     let parent_tag = WidgetTag::named("parent");
     let grandparent_tag = WidgetTag::named("grandparent");
 
-    let target = NewWidget::new_with_tag(ModularWidget::new(()).record(), target_tag);
-    let parent = NewWidget::new_with_tag(ModularWidget::new_parent(target).record(), parent_tag);
+    let target = NewWidget::new(ModularWidget::new(()).record()).with_tag(target_tag);
+    let parent = NewWidget::new(ModularWidget::new_parent(target).record()).with_tag(parent_tag);
     let grandparent =
-        NewWidget::new_with_tag(ModularWidget::new_parent(parent).record(), grandparent_tag);
+        NewWidget::new(ModularWidget::new_parent(parent).record()).with_tag(grandparent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), grandparent);
     let target_id = harness.get_widget(target_tag).id();
@@ -633,7 +622,8 @@ fn access_event_bubbling() {
     // Send random event
     harness.process_access_event(ActionRequest {
         action: accesskit::Action::Click,
-        target: target_id.into(),
+        target_tree: TreeId::ROOT,
+        target_node: target_id.into(),
         data: None,
     });
 
@@ -659,10 +649,10 @@ fn accessibility_focus() {
 
     let parent = Flex::column()
         .with_fixed(NewWidget::new(Button::with_text("")))
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_2))
-        .with_fixed(NewWidget::new_with_tag(Button::with_text(""), child_3))
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_2))
+        .with_fixed(NewWidget::new(Button::with_text("")).with_tag(child_3))
         .with_fixed(NewWidget::new(Button::with_text("")))
-        .with_auto_id();
+        .prepare();
 
     let mut harness = TestHarness::create(test_property_set(), parent);
     let child_2_id = harness.get_widget(child_2).id();
@@ -671,7 +661,8 @@ fn accessibility_focus() {
     // Send focus event
     harness.process_access_event(ActionRequest {
         action: accesskit::Action::Focus,
-        target: child_3_id.into(),
+        target_tree: TreeId::ROOT,
+        target_node: child_3_id.into(),
         data: None,
     });
     assert_eq!(harness.focused_widget_id(), Some(child_3_id));
@@ -679,7 +670,8 @@ fn accessibility_focus() {
     // Send blur event with incorrect id
     harness.process_access_event(ActionRequest {
         action: accesskit::Action::Blur,
-        target: child_2_id.into(),
+        target_tree: TreeId::ROOT,
+        target_node: child_2_id.into(),
         data: None,
     });
     assert_eq!(harness.focused_widget_id(), Some(child_3_id));
@@ -687,7 +679,8 @@ fn accessibility_focus() {
     // Send blur event with correct id
     harness.process_access_event(ActionRequest {
         action: accesskit::Action::Blur,
-        target: child_3_id.into(),
+        target_tree: TreeId::ROOT,
+        target_node: child_3_id.into(),
         data: None,
     });
     assert_eq!(harness.focused_widget_id(), None);
@@ -704,7 +697,7 @@ fn downcast_untyped_action() {
         ctx.submit_untyped_action(Box::new(ArbitraryAction));
     });
 
-    let widget = NewWidget::new_with_tag(arbitrary_submitter, target_tag);
+    let widget = NewWidget::new(arbitrary_submitter).with_tag(target_tag);
 
     let mut harness = TestHarness::create(test_property_set(), widget);
     let target_id = harness.get_widget(target_tag).id();

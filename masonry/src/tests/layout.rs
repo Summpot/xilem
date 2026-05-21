@@ -3,7 +3,7 @@
 
 use assert_matches::assert_matches;
 
-use crate::core::{NewWidget, Widget, WidgetOptions, WidgetTag};
+use crate::core::{NewWidget, Widget, WidgetTag};
 use crate::kurbo::{Insets, Point, Rect, Size};
 use crate::layout::{AsUnit, Length, SizeDef};
 use crate::properties::{BorderWidth, Dimensions, Padding};
@@ -22,19 +22,19 @@ fn layout_simple() {
     let widget = Flex::column()
         .with_fixed(
             Flex::row()
-                .with_fixed(NewWidget::new_with_tag(
-                    SizedBox::empty().width(box_side).height(box_side),
-                    tag_1,
-                ))
-                .with_fixed(NewWidget::new_with_tag(
-                    SizedBox::empty().width(box_side).height(box_side),
-                    tag_2,
-                ))
+                .with_fixed(
+                    NewWidget::new(SizedBox::empty().width(box_side).height(box_side))
+                        .with_tag(tag_1),
+                )
+                .with_fixed(
+                    NewWidget::new(SizedBox::empty().width(box_side).height(box_side))
+                        .with_tag(tag_2),
+                )
                 .with_spacer(1.0)
-                .with_auto_id(),
+                .prepare(),
         )
         .with_spacer(1.0)
-        .with_auto_id();
+        .prepare();
 
     let harness = TestHarness::create(test_property_set(), widget);
 
@@ -52,12 +52,12 @@ fn layout_simple() {
 
 #[test]
 fn forget_to_recurse_layout() {
-    let widget = ModularWidget::new_parent(Flex::row().with_auto_id())
-        .measure_fn(|_, _, _, _, _, _| 0.)
+    let widget = ModularWidget::new_parent(Flex::row().prepare())
+        .measure_fn(|_, _, _, _, _, _| Length::ZERO)
         .layout_fn(|_child, _ctx, _, _| {
             // We forget to call ctx.run_layout();
         })
-        .with_auto_id();
+        .prepare();
 
     assert_debug_panics!(
         TestHarness::create(test_property_set(), widget),
@@ -67,12 +67,12 @@ fn forget_to_recurse_layout() {
 
 #[test]
 fn forget_to_call_place_child() {
-    let widget = ModularWidget::new_parent(Flex::row().with_auto_id())
+    let widget = ModularWidget::new_parent(Flex::row().prepare())
         .layout_fn(|child, ctx, _, size| {
             // We call ctx.run_layout(), but forget place_child
             ctx.run_layout(child, size);
         })
-        .with_auto_id();
+        .prepare();
 
     assert_debug_panics!(
         TestHarness::create(test_property_set(), widget),
@@ -82,13 +82,13 @@ fn forget_to_call_place_child() {
 
 #[test]
 fn call_place_child_before_layout() {
-    let widget = ModularWidget::new_parent(Flex::row().with_auto_id())
-        .measure_fn(|_, _, _, _, _, _| 0.)
+    let widget = ModularWidget::new_parent(Flex::row().prepare())
+        .measure_fn(|_, _, _, _, _, _| Length::ZERO)
         .layout_fn(|child, ctx, _, _| {
             // We call ctx.place_child(), but forget run_layout
             ctx.place_child(child, Point::ORIGIN);
         })
-        .with_auto_id();
+        .prepare();
 
     assert_debug_panics!(
         TestHarness::create(test_property_set(), widget),
@@ -100,11 +100,11 @@ fn call_place_child_before_layout() {
 fn run_layout_on_stashed() {
     let parent_tag = WidgetTag::named("parent");
     let widget =
-        ModularWidget::new_parent(Flex::row().with_auto_id()).layout_fn(|child, ctx, _, size| {
+        ModularWidget::new_parent(Flex::row().prepare()).layout_fn(|child, ctx, _, size| {
             ctx.run_layout(child, size);
             ctx.place_child(child, Point::ZERO);
         });
-    let widget = NewWidget::new_with_tag(widget, parent_tag);
+    let widget = NewWidget::new(widget).with_tag(parent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), widget);
 
@@ -121,14 +121,14 @@ fn run_layout_on_stashed() {
 fn stash_then_run_layout() {
     let parent_tag = WidgetTag::named("parent");
     let widget =
-        ModularWidget::new_parent(Flex::row().with_auto_id()).layout_fn(|child, ctx, _, size| {
+        ModularWidget::new_parent(Flex::row().prepare()).layout_fn(|child, ctx, _, size| {
             // We check that stashing a widget is effective "immediately"
             // and triggers an error.
             ctx.set_stashed(child, true);
             ctx.run_layout(child, size);
             ctx.place_child(child, Point::ZERO);
         });
-    let widget = NewWidget::new_with_tag(widget, parent_tag);
+    let widget = NewWidget::new(widget).with_tag(parent_tag);
 
     assert_debug_panics!(
         TestHarness::create(test_property_set(), widget),
@@ -140,14 +140,14 @@ fn stash_then_run_layout() {
 fn unstash_then_run_layout() {
     let parent_tag = WidgetTag::named("parent");
     let widget =
-        ModularWidget::new_parent(Flex::row().with_auto_id()).layout_fn(|child, ctx, _, size| {
+        ModularWidget::new_parent(Flex::row().prepare()).layout_fn(|child, ctx, _, size| {
             // We check that unstashing a widget is effective "immediately"
             // and avoids an error.
             ctx.set_stashed(child, false);
             ctx.run_layout(child, size);
             ctx.place_child(child, Point::ZERO);
         });
-    let widget = NewWidget::new_with_tag(widget, parent_tag);
+    let widget = NewWidget::new(widget).with_tag(parent_tag);
 
     let mut harness = TestHarness::create(test_property_set(), widget);
 
@@ -162,11 +162,9 @@ fn skip_layout_when_cached() {
     let button_tag = WidgetTag::named("button");
     let sibling_tag = WidgetTag::named("sibling");
 
-    let button = NewWidget::new_with_tag(Button::with_text("Foobar").record(), button_tag);
-    let sibling = NewWidget::new_with_tag(
-        SizedBox::empty().width(20.px()).height(20.px()),
-        sibling_tag,
-    );
+    let button = NewWidget::new(Button::with_text("Foobar").record()).with_tag(button_tag);
+    let sibling =
+        NewWidget::new(SizedBox::empty().width(20.px()).height(20.px())).with_tag(sibling_tag);
 
     // We choose a ZStack, because it should pass down the same constraints no matter what.
     let parent = NewWidget::new(
@@ -199,7 +197,7 @@ fn skip_layout_when_cached() {
 #[test]
 fn pixel_snapping() {
     let child_tag = WidgetTag::named("child");
-    let child = NewWidget::new_with_tag(SizedBox::empty().size(10.3.px(), 10.3.px()), child_tag);
+    let child = NewWidget::new(SizedBox::empty().size(10.3.px(), 10.3.px())).with_tag(child_tag);
     let pos = Point::new(5.1, 5.3);
     let parent = ModularWidget::new_parent(child).layout_fn(move |child, ctx, _, size| {
         let child_size = ctx.compute_size(child, SizeDef::fit(size), size.into());
@@ -208,7 +206,7 @@ fn pixel_snapping() {
         ctx.set_baselines(2.4, 2.6);
     });
     let parent_tag = WidgetTag::named("parent");
-    let parent = NewWidget::new_with_tag(parent, parent_tag);
+    let parent = NewWidget::new(parent).with_tag(parent_tag);
 
     let harness = TestHarness::create(test_property_set(), parent);
 
@@ -231,18 +229,18 @@ fn layout_insets() {
     let parent_tag = WidgetTag::named("parent");
 
     let child_widget = ModularWidget::new(())
-        .measure_fn(|_, _, _, _, _, _| BOX_WIDTH)
+        .measure_fn(|_, _, _, _, _, _| BOX_WIDTH.px())
         .layout_fn(|_, ctx, _, _| {
             // this widget paints twenty points above and below its layout bounds
             ctx.set_paint_insets(Insets::uniform_xy(0., 20.));
         });
 
-    let parent_widget = NewWidget::new_with_tag(
-        SizedBox::new(NewWidget::new_with_tag(child_widget, child_tag)),
-        parent_tag,
-    );
+    let parent_widget = NewWidget::new(SizedBox::new(
+        NewWidget::new(child_widget).with_tag(child_tag),
+    ))
+    .with_tag(parent_tag);
 
-    let root_widget = Portal::new(parent_widget).with_auto_id();
+    let root_widget = Portal::new(parent_widget).prepare();
 
     let harness = TestHarness::create(test_property_set(), root_widget);
 
@@ -276,20 +274,17 @@ fn content_box() {
     let props = (
         Dimensions::fixed(100.px(), 100.px()),
         Padding {
-            left: 1.,
-            right: 2.,
-            top: 3.,
-            bottom: 4.,
+            left: 1.px(),
+            right: 2.px(),
+            top: 3.px(),
+            bottom: 4.px(),
         },
-        BorderWidth::all(1.),
+        BorderWidth::all(1.px()),
     );
 
-    let hero = NewWidget::new_with(
-        Button::with_text("Hero"),
-        Some(tag),
-        WidgetOptions::default(),
-        props,
-    );
+    let hero = NewWidget::new(Button::with_text("Hero"))
+        .with_tag(tag)
+        .with_props(props);
 
     let harness = TestHarness::create(test_property_set(), hero);
 

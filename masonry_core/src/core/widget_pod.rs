@@ -1,18 +1,18 @@
 // Copyright 2018 the Xilem Authors and the Druid Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::TypeId;
+use std::{any::TypeId, collections::HashSet};
 
-use vello::kurbo::Affine;
+use kurbo::Affine;
 
-use crate::core::{PropertySet, Widget, WidgetId, WidgetTag, WidgetTagInner};
+use crate::core::{PropertySet, PropertyStackId, Widget, WidgetId, WidgetTag, WidgetTagInner};
 
 /// A container for one widget in the hierarchy.
 ///
 /// Generally, container widgets don't contain other widgets directly,
 /// but rather contain a `WidgetPod`, which has additional state needed
 /// for layout and for the widget to participate in event flow.
-pub struct WidgetPod<W: ?Sized> {
+pub struct WidgetPod<W: Widget + ?Sized> {
     id: WidgetId,
     inner: WidgetPodInner<W>,
 }
@@ -38,17 +38,40 @@ pub struct NewWidget<W: ?Sized> {
     pub options: WidgetOptions,
     /// The properties the widget will be created with.
     pub properties: PropertySet,
+    /// The id of the cascading stack of properties that will be applied to this widget, if any.
+    pub property_stack_id: Option<PropertyStackId>,
+    /// The classes the widget will be created with.
+    pub classes: HashSet<String>,
 
     pub(crate) tag: Option<WidgetTagInner>,
 }
 
-impl<W: ?Sized + Widget> std::fmt::Debug for NewWidget<W> {
+impl<W: Widget + ?Sized> std::fmt::Debug for WidgetPod<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WidgetPod")
+            .field("id", &self.id)
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<W: Widget + ?Sized> std::fmt::Debug for WidgetPodInner<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Create(arg0) => f.debug_tuple("Create").field(arg0).finish(),
+            Self::Inserted => write!(f, "Inserted"),
+        }
+    }
+}
+
+impl<W: Widget + ?Sized> std::fmt::Debug for NewWidget<W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NewWidget")
             .field("widget_type", &self.widget.short_type_name())
             .field("id", &self.id)
             .field("options", &self.options)
             .field("tag", &self.tag)
+            .field("classes", &self.classes)
             .finish_non_exhaustive()
     }
 }
@@ -73,67 +96,29 @@ pub struct WidgetOptions {
 // through context methods where they already have access to the arena.
 // Implementing that requires solving non-trivial design questions.
 
-enum WidgetPodInner<W: ?Sized> {
-    Create(NewWidget<W>),
+enum WidgetPodInner<W: Widget + ?Sized> {
+    Create(Box<NewWidget<W>>),
     Inserted,
 }
 
 impl<W: Widget> NewWidget<W> {
     /// Creates a new widget.
     ///
-    /// You can also get the same result with [`Widget::with_auto_id()`].
+    /// You can also get the same result with [`Widget::prepare()`].
     #[inline(always)]
     pub fn new(inner: W) -> Self {
-        Self::new_with(
-            inner,
-            None,
-            WidgetOptions::default(),
-            PropertySet::default(),
-        )
-    }
-
-    /// Creates a new widget with a potential [`WidgetTag`],
-    /// custom [`WidgetOptions`] and custom [`PropertySet`].
-    pub fn new_with(
-        inner: W,
-        tag: Option<WidgetTag<W>>,
-        options: WidgetOptions,
-        props: impl Into<PropertySet>,
-    ) -> Self {
         Self {
             widget: Box::new(inner),
             id: WidgetId::next(),
             action_type: TypeId::of::<W::Action>(),
             #[cfg(debug_assertions)]
             action_type_name: std::any::type_name::<W::Action>(),
-            options,
-            properties: props.into(),
-            tag: tag.map(|tag| tag.inner),
+            options: WidgetOptions::default(),
+            properties: PropertySet::default(),
+            property_stack_id: None,
+            classes: HashSet::new(),
+            tag: None,
         }
-    }
-
-    /// Creates a new widget with a [`WidgetTag`].
-    #[inline(always)]
-    pub fn new_with_tag(inner: W, tag: WidgetTag<W>) -> Self {
-        Self::new_with(
-            inner,
-            Some(tag),
-            WidgetOptions::default(),
-            PropertySet::default(),
-        )
-    }
-
-    // TODO - Replace with builder methods? More allocations then though?
-    /// Creates a new widget with custom [`PropertySet`].
-    #[inline(always)]
-    pub fn new_with_props(inner: W, props: impl Into<PropertySet>) -> Self {
-        Self::new_with(inner, None, WidgetOptions::default(), props)
-    }
-
-    /// Creates a new widget with custom [`WidgetOptions`].
-    #[inline(always)]
-    pub fn new_with_options(inner: W, options: WidgetOptions) -> Self {
-        Self::new_with(inner, None, options, PropertySet::default())
     }
 }
 
@@ -149,15 +134,86 @@ impl<W: Widget + ?Sized> NewWidget<W> {
             action_type_name: self.action_type_name,
             options: self.options,
             properties: self.properties,
+            property_stack_id: self.property_stack_id,
             tag: self.tag,
+            classes: self.classes,
         }
+    }
+
+    /// Assigns the given [`WidgetTag`] to this widget.
+    ///
+    /// You can only add one widget with a given tag to the entire widget tree.
+    /// Trying to add another widget with the same tag will debug-panic or fail silently.
+    pub fn with_tag(mut self, tag: WidgetTag<W>) -> Self {
+        self.tag = Some(tag.inner);
+        self
+    }
+
+    /// Assigns the given erased [`WidgetTag`] to this widget.
+    pub fn with_erased_tag(mut self, tag: WidgetTag<dyn Widget>) -> Self {
+        self.tag = Some(tag.inner);
+        self
+    }
+
+    /// Applies the given [properties] to this widget.
+    ///
+    /// Calling this method multiple times will merge the properties together,
+    /// with later properties taking precedence over earlier ones with the same type.
+    ///
+    /// [properties]: crate::doc::masonry_concepts#properties
+    pub fn with_props(mut self, props: impl Into<PropertySet>) -> Self {
+        if self.properties.map.is_empty() {
+            self.properties = props.into();
+        } else {
+            let props = props.into();
+            self.properties
+                .map
+                .extend(props.map.into_raw().into_values());
+        }
+        self
+    }
+
+    /// Sets the [`Affine`] transform for this widget.
+    pub fn with_transform(mut self, transform: Affine) -> Self {
+        self.options.transform = transform;
+        self
+    }
+
+    /// Assigns a [`PropertyStack`](crate::core::PropertyStack) to this widget.
+    pub fn with_property_stack(mut self, id: PropertyStackId) -> Self {
+        self.property_stack_id = Some(id);
+        self
+    }
+
+    /// Adds [class] to this widget.
+    ///
+    /// [class]: crate::doc::masonry_concepts#classes
+    pub fn with_class(mut self, class: &str) -> Self {
+        self.classes.insert(class.to_string());
+        self
+    }
+
+    /// Adds [classes] to this widget.
+    ///
+    /// [classes]: crate::doc::masonry_concepts#classes
+    pub fn with_classes(mut self, classes: impl IntoIterator<Item = String>) -> Self {
+        self.classes.extend(classes);
+        self
+    }
+
+    /// Set whether the widget will be created in a [disabled] state.
+    ///
+    /// [disabled]: crate::doc::masonry_concepts#disabled
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.options.disabled = disabled;
+        self
     }
 
     /// Creates a `WidgetPod` which will be added to the widget tree.
     pub fn to_pod(self) -> WidgetPod<W> {
         WidgetPod {
             id: self.id,
-            inner: WidgetPodInner::Create(self),
+            inner: WidgetPodInner::Create(Box::new(self)),
         }
     }
 
@@ -182,7 +238,7 @@ impl<W: Widget + ?Sized> WidgetPod<W> {
 
     pub(crate) fn take_inner(&mut self) -> Option<NewWidget<W>> {
         match std::mem::replace(&mut self.inner, WidgetPodInner::Inserted) {
-            WidgetPodInner::Create(widget) => Some(widget),
+            WidgetPodInner::Create(widget) => Some(*widget),
             WidgetPodInner::Inserted => None,
         }
     }

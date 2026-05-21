@@ -17,7 +17,7 @@ Xilem and Masonry provide an experimental high-level architecture for writing GU
 **Masonry** is a foundational crate for building natively compiled GUIs in Rust.
 It provides a retained widget tree and runs event handling and update passes on it.
 
-**Xilem** a high-level reactive framework inspired by React, SwiftUI and Elm.
+**Xilem** is a high-level reactive framework inspired by React, SwiftUI and Elm.
 It lets users create a lightweight view tree, and changes the rendered app based on changes to the tree.
 It has a web backend and a Masonry backend.
 
@@ -106,8 +106,8 @@ sudo apt-get install clang libwayland-dev libxkbcommon-x11-dev libvulkan-dev
 
 There's a Nix flake in `docs/` which may be used for developing on NixOS:
 
-> [!INFO]
->
+> [!NOTE]
+> 
 > This flake is provided as a starting point, and we do not routinely validate its correctness.
 > We do not require contributors to ensure that this accurately reflects the build requirements, as we expect most contributors (and indeed many maintainers) will not be using NixOS.
 > If it is out of date, please let us know by opening an issue or PR.
@@ -137,7 +137,7 @@ split-debuginfo="unpacked"
 
 ## Minimum supported Rust Version (MSRV)
 
-This version of Xilem has been verified to compile with **Rust 1.88** and later.
+This version of Xilem has been verified to compile with **Rust 1.92** and later.
 
 Future versions of Xilem might increase the Rust version requirement.
 It will not be treated as a breaking change and as such can even happen with small patch releases.

@@ -5,15 +5,15 @@ use std::any::TypeId;
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
-use vello::Scene;
-use vello::kurbo::{Axis, Size};
 
 use crate::core::{
     AccessCtx, AccessEvent, ChildrenIds, EventCtx, Layer, LayoutCtx, MeasureCtx, NewWidget,
     NoAction, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update,
     UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, Size};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
 
 /// A [`Layer`] representing a simple tooltip showing some content until the mouse moves.
 pub struct Tooltip {
@@ -94,8 +94,8 @@ impl Widget for Tooltip {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -118,7 +118,13 @@ impl Widget for Tooltip {
         ctx.derive_baselines(&self.child);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::Tooltip

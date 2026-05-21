@@ -3,7 +3,7 @@
 
 //! Types and logic commonly used across widgets.
 //!
-//! See [properties documentation](crate::doc::implementing_container_widget) for details.
+//! See [properties documentation](crate::doc::widget_properties) for details.
 
 mod checkmark;
 mod content_color;
@@ -11,11 +11,12 @@ mod gap;
 mod line_breaking;
 mod object_fit;
 mod placeholder_color;
+mod portal;
 mod progress_bar;
+mod scroll_bar;
 mod selection;
 mod slider;
 mod step_input;
-mod switch;
 
 pub mod types;
 
@@ -25,10 +26,11 @@ pub use gap::*;
 pub use line_breaking::*;
 pub use object_fit::*;
 pub use placeholder_color::*;
+pub use portal::*;
 pub use progress_bar::*;
+pub use scroll_bar::*;
 pub use selection::*;
 pub use slider::*;
 pub use step_input::*;
-pub use switch::*;
 
 pub use masonry_core::properties::*;

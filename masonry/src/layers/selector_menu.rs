@@ -3,16 +3,16 @@
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
-    AccessCtx, AccessEvent, ChildrenIds, CollectionWidget, ComposeCtx, EventCtx, HasProperty,
-    Layer, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx, PointerButton, PointerButtonEvent,
-    PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget,
+    AccessCtx, AccessEvent, ChildrenIds, CollectionWidget, ComposeCtx, EventCtx, Layer, LayoutCtx,
+    MeasureCtx, NewWidget, NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent,
+    PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, UsesProperty, Widget,
     WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::{LayoutSize, LenDef, LenReq, SizeDef};
+use crate::layout::{AsUnit, LayoutSize, LenDef, LenReq, Length, SizeDef};
 use crate::properties::Gap;
 use crate::widgets::{SelectionChanged, Selector};
 
@@ -136,7 +136,7 @@ impl CollectionWidget<()> for SelectorMenu {
     }
 }
 
-impl HasProperty<Gap> for SelectorMenu {}
+impl UsesProperty<Gap> for SelectorMenu {}
 
 impl Widget for SelectorMenu {
     type Action = NoAction;
@@ -236,56 +236,51 @@ impl Widget for SelectorMenu {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        cross_length: Option<Length>,
+    ) -> Length {
+        let cache = ctx.property_cache();
+        let gap = props.get::<Gap>(cache);
 
-        let gap = props.get::<Gap>();
-
-        let gap_length = gap.gap.dp(scale);
+        let gap_length = gap.gap.get();
 
         let (len_req, min_result) = match len_req {
-            LenReq::MinContent | LenReq::MaxContent => (len_req, 0.),
+            LenReq::MinContent | LenReq::MaxContent => (len_req, Length::ZERO),
             LenReq::FitContent(space) => (LenReq::MinContent, space),
         };
 
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
-        let mut length: f64 = 0.;
+        let mut length = Length::ZERO;
         for child in &mut self.children {
             let child_length =
                 ctx.compute_length(child, auto_length, context_size, axis, cross_length);
             match axis {
                 Axis::Horizontal => length = length.max(child_length),
-                Axis::Vertical => length += child_length,
+                Axis::Vertical => length = length.saturating_add(child_length),
             }
         }
 
         if axis == Axis::Vertical {
             let gap_count = (self.children.len() - 1) as f64;
-            length += gap_count * gap_length;
+            let gaps_length = gap_count * gap_length;
+            length = length.saturating_add(gaps_length.px());
         }
 
         min_result.max(length)
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let gap = props.get::<Gap>();
+        let cache = ctx.property_cache();
+        let gap = props.get::<Gap>(cache);
 
         let gap_count = (self.children.len() - 1) as f64;
-        let gap_length = gap.gap.dp(scale);
+        let gap_length = gap.gap.get();
         let total_child_vertical_space = size.height - gap_length * gap_count;
         let child_vertical_space = total_child_vertical_space / self.children.len() as f64;
 
-        let width_def = LenDef::FitContent(size.width);
-        let height_def = LenDef::FitContent(child_vertical_space.max(0.));
+        let width_def = LenDef::FitContent(size.width.px());
+        let height_def = LenDef::FitContent(child_vertical_space.max(0.).px());
         let auto_size = SizeDef::new(width_def, height_def);
         let context_size = size.into();
 
@@ -317,7 +312,13 @@ impl Widget for SelectorMenu {
 
     fn compose(&mut self, _ctx: &mut ComposeCtx<'_>) {}
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer

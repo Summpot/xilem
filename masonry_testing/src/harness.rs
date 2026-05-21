@@ -2,24 +2,42 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Tools and infrastructure for testing widgets.
+//!
+//! # Note on testing philosophy
+//!
+//! `TestHarness` provides two APIs, so to speak:
+//!
+//! - A high-level API that mimics user interactions.
+//! - A low-level API that mirrors the [`RenderRoot`] API.
+//!
+//! Developers are encouraged to use the former if possible, and write tests as if
+//! they were end users interacting with an application.
+//!
+//! We don't want users to write `harness.pointer_event(left_click(button_position))`,
+//! we want them to write `harness.click_on(button)`, so to speak (actual method names differ).
+//!
+//! When adding features to `TestHarness`, we should always strive to give them such a high-level API.
 
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 use std::marker::PhantomData;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::UNIX_EPOCH;
 
 use image::{DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage};
+use imaging_vello_cpu::VelloCpuRenderer;
+use masonry_core::imaging::record::{Scene, replay_transformed};
+use masonry_core::imaging::{ImageRenderer as _, Painter};
 use oxipng::{Options, optimize_from_memory};
 use tracing::debug;
 
-use masonry_core::accesskit::{Action, ActionRequest, Node, Role, Tree, TreeUpdate};
+use masonry_core::accesskit::{Action, ActionRequest, Node, Role, Tree, TreeId, TreeUpdate};
 use masonry_core::anymore::AnyDebug;
 use masonry_core::app::{
-    RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy, try_init_test_tracing,
+    RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, VisualLayerPlan,
+    WindowSizePolicy, try_init_test_tracing,
 };
 use masonry_core::core::keyboard::{Code, Key, KeyState, NamedKey};
 use masonry_core::core::{
@@ -29,17 +47,9 @@ use masonry_core::core::{
     WidgetId, WidgetMut, WidgetRef, WidgetTag, WindowEvent,
 };
 use masonry_core::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
-use masonry_core::kurbo::{Affine, Point, Rect, Size, Vec2};
+use masonry_core::kurbo::{Affine, Point, Rect, Vec2};
 use masonry_core::peniko::{Blob, Color};
 use masonry_core::util::Duration;
-use masonry_core::vello::peniko::Fill;
-use masonry_core::vello::util::{RenderContext, block_on_wgpu};
-use masonry_core::vello::wgpu::{
-    BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode,
-    TexelCopyBufferInfo, TexelCopyBufferLayout, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureUsages, TextureViewDescriptor,
-};
-use masonry_core::vello::{self, Scene};
 
 use crate::screenshots::get_image_diff;
 use crate::{Record, Recorder};
@@ -132,12 +142,12 @@ pub const PRIMARY_MOUSE: PointerInfo = PointerInfo {
 ///
 /// [`assert_render_snapshot`]: crate::assert_render_snapshot
 /// [`insta`]: https://docs.rs/insta/latest/insta/
+#[derive(Debug)]
 pub struct TestHarness<W: Widget> {
     signal_receiver: mpsc::Receiver<RenderRootSignal>,
     render_root: RenderRoot,
     access_tree: accesskit_consumer::Tree,
-    render_context: Option<RenderContext>,
-    vello_renderer: Option<vello::Renderer>,
+    renderer: Option<VelloCpuRenderer>,
     mouse_state: PointerState,
     window_size: PhysicalSize<u32>,
     root_padding: u32,
@@ -159,7 +169,7 @@ pub struct TestHarness<W: Widget> {
 pub struct TestHarnessParams {
     /// The size of the virtual window the harness renders into for snapshot testing.
     /// Defaults to [`TestHarnessParams::DEFAULT_SIZE`].
-    pub window_size: Size,
+    pub window_size: PhysicalSize<u32>,
     /// The background color of the virtual window.
     /// Defaults to [`TestHarnessParams::DEFAULT_BACKGROUND_COLOR`].
     pub background_color: Color,
@@ -251,7 +261,7 @@ impl TestHarnessParams {
     };
 
     /// Default canvas size for tests.
-    pub const DEFAULT_SIZE: Size = Size::new(400., 400.);
+    pub const DEFAULT_SIZE: PhysicalSize<u32> = PhysicalSize::new(400, 400);
 
     /// Default error tolerance for screenshot tests.
     pub const DEFAULT_SCREENSHOT_TOLERANCE: u32 = 16;
@@ -271,6 +281,57 @@ impl TestHarnessParams {
 impl Default for TestHarnessParams {
     fn default() -> Self {
         Self::DEFAULT
+    }
+}
+
+impl TestHarnessParams {
+    /// Returns parameters for a test harness with custom dimensions.
+    pub fn size_and_padding(window_size: impl Into<PhysicalSize<u32>>, root_padding: u32) -> Self {
+        Self {
+            window_size: window_size.into(),
+            root_padding,
+            ..Self::DEFAULT
+        }
+    }
+
+    /// Builder method to set `window_size`.
+    pub fn with_size(self, window_size: impl Into<PhysicalSize<u32>>) -> Self {
+        Self {
+            window_size: window_size.into(),
+            ..self
+        }
+    }
+
+    /// Builder method to set `background_color`.
+    pub const fn with_background(self, background_color: Color) -> Self {
+        Self {
+            background_color,
+            ..self
+        }
+    }
+
+    /// Builder method to set `root_padding`.
+    pub const fn with_padding(self, root_padding: u32) -> Self {
+        Self {
+            root_padding,
+            ..self
+        }
+    }
+
+    /// Builder method to set `scale_factor`.
+    pub const fn with_scale(self, scale_factor: f64) -> Self {
+        Self {
+            scale_factor,
+            ..self
+        }
+    }
+
+    /// Builder method to set `max_screenshot_size`.
+    pub const fn with_max_screenshot_size(self, max_screenshot_size: u32) -> Self {
+        Self {
+            max_screenshot_size,
+            ..self
+        }
     }
 }
 
@@ -294,15 +355,12 @@ impl<W: Widget> TestHarness<W> {
     pub fn create_with_size(
         default_props: DefaultProperties,
         root_widget: NewWidget<W>,
-        window_size: Size,
+        window_size: impl Into<PhysicalSize<u32>>,
     ) -> Self {
         Self::create_with(
             default_props,
             root_widget,
-            TestHarnessParams {
-                window_size,
-                ..Default::default()
-            },
+            TestHarnessParams::default().with_size(window_size),
         )
     }
 
@@ -313,15 +371,7 @@ impl<W: Widget> TestHarness<W> {
         params: TestHarnessParams,
     ) -> Self {
         let mouse_state = PointerState::default();
-        // TODO - Change params.window_size type and remove this step
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "If sizes are large enough to overflow a u32, we have other problems"
-        )]
-        let window_size = PhysicalSize::new(
-            params.window_size.width as _,
-            params.window_size.height as _,
-        );
+        let window_size = params.window_size;
 
         // If no tracing subscriber has been set before, we set our own. If one has
         // already been set, we get an error which we swallow.
@@ -335,6 +385,7 @@ impl<W: Widget> TestHarness<W> {
         let (signal_sender, signal_receiver) = mpsc::channel::<RenderRootSignal>();
 
         let dummy_tree_update = TreeUpdate {
+            tree_id: TreeId::ROOT,
             nodes: vec![(0.into(), Node::new(Role::Window))],
             tree: Some(Tree {
                 root: 0.into(),
@@ -358,8 +409,7 @@ impl<W: Widget> TestHarness<W> {
                 },
             ),
             access_tree: accesskit_consumer::Tree::new(dummy_tree_update, false),
-            render_context: None,
-            vello_renderer: None,
+            renderer: None,
             mouse_state,
             window_size,
             background_color: params.background_color,
@@ -387,6 +437,8 @@ impl<W: Widget> TestHarness<W> {
 
         harness
     }
+
+    // TODO - Reorder methods. Low-level methods should appear later in the doc than high-level methods.
 
     // --- MARK: PROCESS EVENTS
 
@@ -478,158 +530,65 @@ impl<W: Widget> TestHarness<W> {
     }
 
     // --- MARK: RENDER
-    // TODO - We add way too many dependencies in this code
-    // TODO - Should be async?
     /// Renders the window into an image and updates the `accesskit_consumer` tree.
     ///
     /// The returned image contains a bitmap (an array of pixels) as an 8-bits-per-channel RGB image.
     /// The returned image has padding of the [`TestHarnessParams::root_padding`] this harness
     /// was created with on all sides.
-    /// This padded area is currently indicated with a different background color.
-    // TODO: There are some users of this function which just use it assert that `paint`/`compose` doesn't crash.
-    // Those could avoid actually performing a real render.
+    ///
+    /// If you just want to run the rendering passes and get the render data without
+    /// rastering it into an image, use [`Self::redraw`] instead.
     pub fn render(&mut self) -> RgbaImage {
-        let (paint_result, tree_update) = self.render_root.redraw();
-        let contents_scene = paint_result.composite();
-        let tree_update = tree_update.unwrap();
-        self.access_tree
-            .update_and_process_changes(tree_update, &mut NoOpTreeChangeHandler);
+        let (visual_layers, _tree_update) = self.redraw();
+
         if std::env::var("SKIP_RENDER_TESTS").is_ok_and(|it| !it.is_empty()) {
             return RgbaImage::from_pixel(1, 1, Rgba([255, 255, 255, 255]));
         }
 
-        let mut context = self
-            .render_context
-            .take()
-            .unwrap_or_else(RenderContext::new);
-
-        let device_id =
-            pollster::block_on(context.device(None)).expect("No compatible device found");
-        let device_handle = &mut context.devices[device_id];
-        let device = &device_handle.device;
-        let queue = &device_handle.queue;
-
-        let mut renderer = self.vello_renderer.take().unwrap_or_else(|| {
-            vello::Renderer::new(
-                device,
-                vello::RendererOptions {
-                    // TODO - Examine this value
-                    use_cpu: true,
-                    num_init_threads: NonZeroUsize::new(1),
-                    // TODO - Examine this value
-                    antialiasing_support: vello::AaSupport::area_only(),
-                    ..Default::default()
-                },
-            )
-            .expect("Got non-Send/Sync error from creating renderer")
-        });
-
-        let (width, height) = (self.window_size.width, self.window_size.height);
-
-        let padding = self.root_padding;
-        // Avoid having a zero-sized image
-        let width = width.max(1) + padding * 2;
-        let height = height.max(1) + padding * 2;
-
-        let render_params = vello::RenderParams {
-            base_color: self.background_color,
-            width,
-            height,
-            antialiasing_method: vello::AaConfig::Area,
+        let (width, height) = {
+            // Avoid having a zero-sized image.
+            let width = self.window_size.width.max(1) + self.root_padding * 2;
+            let height = self.window_size.height.max(1) + self.root_padding * 2;
+            (width, height)
         };
 
-        let size = Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-        let target = device.create_texture(&TextureDescriptor {
-            label: Some("Target texture"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&TextureViewDescriptor::default());
+        let mut full_scene = Scene::new();
+        {
+            let (width, height) = { (f64::from(width), f64::from(height)) };
+            let mut painter = Painter::new(&mut full_scene);
+            painter.fill_rect(Rect::new(0.0, 0.0, width, height), self.background_color);
 
-        let scene = if padding != 0 {
-            let mut scene = Scene::new();
-            // 25% opacity of 50% grey provides a border of where the actual widget content is.
-            // Alternatively, maybe we should use a stronger color here?
-            let padding_color = Color::from_rgba8(127, 127, 127, 64);
-            // We draw the border first, so that any content is above the background color.
-            for [x0, y0, x1, y1] in [
-                [0, 0, padding, height],                              // Left edge
-                [width - padding, 0, width, height],                  // Right edge
-                [padding, 0, width - padding, padding],               // Top edge
-                [padding, height - padding, width - padding, height], // Bottom edge
-            ] {
-                scene.fill(
-                    Fill::EvenOdd,
-                    Affine::IDENTITY,
-                    padding_color,
-                    None,
-                    &Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64),
-                );
+            let padding_transform =
+                Affine::translate((f64::from(self.root_padding), f64::from(self.root_padding)));
+
+            for layer in &visual_layers.layers {
+                if let VisualLayerKind::Scene(scene) = &layer.kind {
+                    replay_transformed(scene, &mut full_scene, padding_transform * layer.transform);
+                }
             }
-            scene.append(
-                &contents_scene,
-                Some(Affine::translate((padding as f64, padding as f64))),
-            );
-            scene
-        } else {
-            contents_scene
-        };
-        renderer
-            .render_to_texture(device, queue, &scene, &view, &render_params)
-            .expect("Got non-Send/Sync error from rendering");
-        let padded_byte_width = (width * 4).next_multiple_of(256);
-        let buffer_size = padded_byte_width as u64 * height as u64;
-        let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("val"),
-            size: buffer_size,
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("Copy out buffer"),
-        });
-        encoder.copy_texture_to_buffer(
-            target.as_image_copy(),
-            TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_byte_width),
-                    rows_per_image: None,
-                },
-            },
-            size,
-        );
-
-        queue.submit([encoder.finish()]);
-        let buf_slice = buffer.slice(..);
-
-        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-        buf_slice.map_async(MapMode::Read, move |v| sender.send(v).unwrap());
-        let recv_result = block_on_wgpu(device, receiver.receive()).expect("channel was closed");
-        recv_result.expect("failed to map buffer");
-
-        let data = buf_slice.get_mapped_range();
-        let mut result_unpadded =
-            Vec::<u8>::with_capacity((width * height * 4).try_into().unwrap());
-        for row in 0..height {
-            let start = (row * padded_byte_width).try_into().unwrap();
-            result_unpadded.extend(&data[start..start + (width * 4) as usize]);
         }
 
-        self.render_context = Some(context);
-        self.vello_renderer = Some(renderer);
+        if self.renderer.is_none() {
+            self.renderer = Some(VelloCpuRenderer::new(1, 1));
+        }
+        let renderer = self.renderer.as_mut().unwrap();
 
-        RgbaImage::from_vec(width, height, result_unpadded).expect("failed to create image")
+        let image = renderer
+            .render_source(&mut full_scene, width, height)
+            .unwrap();
+        RgbaImage::from_vec(image.width, image.height, image.data).expect("failed to create image")
+    }
+
+    /// Redraws the window.
+    ///
+    /// If you want to get a bitmap image of the contents, use [`Self::render`] instead.
+    pub fn redraw(&mut self) -> (VisualLayerPlan, TreeUpdate) {
+        let (visual_layers, tree_update) = self.render_root.redraw();
+        let tree_update = tree_update.unwrap();
+        self.access_tree
+            .update_and_process_changes(tree_update.clone(), &mut NoOpTreeChangeHandler);
+
+        (visual_layers, tree_update)
     }
 
     /// Returns a reference to the current state of the accessibility tree.
@@ -639,7 +598,19 @@ impl<W: Widget> TestHarness<W> {
 
     /// Returns a reference to the current value of a node of the accessibility tree.
     pub fn access_node(&self, id: WidgetId) -> Option<accesskit_consumer::Node<'_>> {
-        self.access_tree.state().node_by_id(id.into())
+        let mut node_id = self.access_tree.state().root_id();
+        #[expect(
+            unsafe_code,
+            reason = "No public API exists for modifying/creating a accesskit_consumer::NodeId"
+        )]
+        // SAFETY: This hack isn't safe as there is no memory layout guarantee.
+        //         Remove when a public API becomes available.
+        //         https://github.com/AccessKit/accesskit/issues/701
+        unsafe {
+            let p = &mut node_id as *mut accesskit_consumer::NodeId as *mut u64;
+            core::ptr::write_unaligned(p, id.to_raw());
+        }
+        self.access_tree.state().node_by_id(node_id)
     }
 
     // --- MARK: EVENT HELPERS
@@ -662,21 +633,25 @@ impl<W: Widget> TestHarness<W> {
     }
 
     /// Sends a [`Down`](PointerEvent::Down) event to the window.
-    pub fn mouse_button_press(&mut self, button: PointerButton) {
-        self.mouse_state.buttons.insert(button);
+    pub fn mouse_button_press(&mut self, button: Option<PointerButton>) {
+        if let Some(button) = button {
+            self.mouse_state.buttons.insert(button);
+        }
         self.process_pointer_event(PointerEvent::Down(PointerButtonEvent {
             pointer: PRIMARY_MOUSE,
-            button: button.into(),
+            button,
             state: self.mouse_state.clone(),
         }));
     }
 
     /// Sends an [`Up`](PointerEvent::Up) event to the window.
-    pub fn mouse_button_release(&mut self, button: PointerButton) {
-        self.mouse_state.buttons.remove(button);
+    pub fn mouse_button_release(&mut self, button: Option<PointerButton>) {
+        if let Some(button) = button {
+            self.mouse_state.buttons.remove(button);
+        }
         self.process_pointer_event(PointerEvent::Up(PointerButtonEvent {
             pointer: PRIMARY_MOUSE,
-            button: button.into(),
+            button,
             state: self.mouse_state.clone(),
         }));
     }
@@ -701,10 +676,10 @@ impl<W: Widget> TestHarness<W> {
     /// - If the widget doesn't accept pointer events.
     /// - If the widget is scrolled out of view.
     #[track_caller]
-    pub fn mouse_click_on(&mut self, id: WidgetId) {
+    pub fn mouse_click_on(&mut self, id: WidgetId, button: Option<PointerButton>) {
         self.mouse_move_to(id);
-        self.mouse_button_press(PointerButton::Primary);
-        self.mouse_button_release(PointerButton::Primary);
+        self.mouse_button_press(button);
+        self.mouse_button_release(button);
     }
 
     /// Uses [`mouse_move`](Self::mouse_move) to set the internal mouse pos to the center of the given widget.
@@ -718,7 +693,8 @@ impl<W: Widget> TestHarness<W> {
     #[track_caller]
     pub fn mouse_move_to(&mut self, id: WidgetId) {
         let widget = self.get_widget_with_id(id);
-        let local_widget_center = (widget.ctx().border_box_size() / 2.0).to_vec2().to_point();
+        let local_widget_center = widget.ctx().border_box().center();
+
         let widget_center = widget.ctx().window_transform() * local_widget_center;
 
         // TODO - Add reachable_by_pointer() method.
@@ -756,7 +732,7 @@ impl<W: Widget> TestHarness<W> {
     #[track_caller]
     pub fn mouse_move_to_unchecked(&mut self, id: WidgetId) {
         let widget = self.get_widget_with_id(id);
-        let local_widget_center = (widget.ctx().border_box_size() / 2.0).to_vec2().to_point();
+        let local_widget_center = widget.ctx().border_box().center();
         let widget_center = widget.ctx().window_transform() * local_widget_center;
 
         if widget.ctx().is_stashed() {
@@ -778,7 +754,8 @@ impl<W: Widget> TestHarness<W> {
     pub fn scroll_into_view(&mut self, id: WidgetId) {
         self.render_root.handle_access_event(ActionRequest {
             action: Action::ScrollIntoView,
-            target: id.to_raw().into(),
+            target_tree: TreeId::ROOT,
+            target_node: id.to_raw().into(),
             data: None,
         });
     }
@@ -800,7 +777,8 @@ impl<W: Widget> TestHarness<W> {
     pub fn accessibility_click_on(&mut self, id: WidgetId) {
         self.render_root.handle_access_event(ActionRequest {
             action: Action::Click,
-            target: id.to_raw().into(),
+            target_tree: TreeId::ROOT,
+            target_node: id.to_raw().into(),
             data: None,
         });
     }

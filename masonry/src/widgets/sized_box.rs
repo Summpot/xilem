@@ -6,12 +6,12 @@ use std::any::TypeId;
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx, PropertiesRef,
     RegisterCtx, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
 use crate::layout::{LayoutSize, LenReq, Length};
 use crate::properties::{BorderWidth, Padding};
@@ -225,21 +225,20 @@ impl Widget for SizedBox {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        cross_length: Option<Length>,
+    ) -> Length {
+        let cache = ctx.property_cache();
+        let border = props.get::<BorderWidth>(cache);
+        let padding = props.get::<Padding>(cache);
 
-        let border = props.get::<BorderWidth>();
-        let padding = props.get::<Padding>();
-
-        let border_length = border.length(axis).dp(scale);
-        let padding_length = padding.length(axis).dp(scale);
+        let border_length = border.length(axis);
+        let padding_length = padding.length(axis);
 
         // First see if we have an explicitly defined length
         if let Some(length) = self.length(axis) {
-            return (length.dp(scale) - border_length - padding_length).max(0.);
+            return length
+                .saturating_sub(border_length)
+                .saturating_sub(padding_length);
         }
 
         // Otherwise measure the child
@@ -253,9 +252,9 @@ impl Widget for SizedBox {
                     Axis::Vertical => self.height,
                 };
                 length.map(|length| {
-                    let cross_border_length = border.length(cross).dp(scale);
-                    let cross_padding_length = padding.length(cross).dp(scale);
-                    (length.dp(scale) - cross_border_length - cross_padding_length).max(0.)
+                    length
+                        .saturating_sub(border.length(cross))
+                        .saturating_sub(padding.length(cross))
                 })
             });
 
@@ -264,7 +263,7 @@ impl Widget for SizedBox {
 
             ctx.compute_length(child, auto_length, context_size, axis, cross_length)
         } else {
-            0.
+            Length::ZERO
         }
     }
 
@@ -280,7 +279,13 @@ impl Widget for SizedBox {
         ctx.derive_baselines(child);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -326,16 +331,16 @@ mod tests {
     fn empty_box() {
         let mut box_props = PropertySet::new();
         box_props.insert(BorderColor::new(palette::css::BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(5.0));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(5.px()));
 
         let widget = SizedBox::empty()
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_empty_box");
     }
@@ -344,13 +349,14 @@ mod tests {
     fn label_box_no_size() {
         let mut box_props = PropertySet::new();
         box_props.insert(BorderColor::new(palette::css::BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(5.0));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(5.px()));
 
-        let widget = SizedBox::new(Label::new("hello").with_auto_id()).with_props(box_props);
+        let widget = SizedBox::new(Label::new("hello").prepare())
+            .prepare()
+            .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_label_box_no_size");
     }
@@ -359,16 +365,16 @@ mod tests {
     fn label_box_with_size() {
         let mut box_props = PropertySet::new();
         box_props.insert(BorderColor::new(palette::css::BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(5.0));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(5.px()));
 
-        let widget = SizedBox::new(Label::new("hello").with_auto_id())
+        let widget = SizedBox::new(Label::new("hello").prepare())
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_label_box_with_size");
     }
@@ -377,14 +383,15 @@ mod tests {
     fn label_box_with_padding() {
         let mut box_props = PropertySet::new();
         box_props.insert(BorderColor::new(palette::css::BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(5.0));
-        box_props.insert(Padding::from_vh(15., 10.));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(5.px()));
+        box_props.insert(Padding::from_vh(15.px(), 10.px()));
 
-        let widget = SizedBox::new(Label::new("hello").with_auto_id()).with_props(box_props);
+        let widget = SizedBox::new(Label::new("hello").prepare())
+            .prepare()
+            .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_label_box_with_padding");
     }
@@ -394,13 +401,13 @@ mod tests {
         let mut box_props = PropertySet::new();
         box_props.insert(Background::Color(palette::css::PLUM));
 
-        let widget = SizedBox::new(Label::new("hello").with_auto_id())
+        let widget = SizedBox::new(Label::new("hello").prepare())
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_label_box_with_solid_background");
     }
@@ -418,16 +425,16 @@ mod tests {
         ]);
         box_props.insert(Background::Gradient(gradient));
         box_props.insert(BorderColor::new(palette::css::LIGHT_SKY_BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(10.0));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(10.px()));
 
         let widget = SizedBox::empty()
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_empty_box_with_gradient_background");
     }
@@ -445,16 +452,16 @@ mod tests {
         ]);
         box_props.insert(Background::Gradient(gradient));
         box_props.insert(BorderColor::new(palette::css::LIGHT_SKY_BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(10.0));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(10.px()));
 
         let widget = SizedBox::empty()
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_radial_gradient_background");
     }
@@ -472,16 +479,16 @@ mod tests {
         ]);
         box_props.insert(Background::Gradient(gradient));
         box_props.insert(BorderColor::new(palette::css::LIGHT_SKY_BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(10.0));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(10.px()));
 
         let widget = SizedBox::empty()
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_sweep_gradient_background");
     }
@@ -491,16 +498,16 @@ mod tests {
         let mut box_props = PropertySet::new();
         box_props.insert(Background::Color(palette::css::PLUM));
         box_props.insert(BorderColor::new(palette::css::LIGHT_SKY_BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(Padding::all(25.));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(Padding::all(25.px()));
 
-        let widget = SizedBox::new(Label::new("hello").with_auto_id())
+        let widget = SizedBox::new(Label::new("hello").prepare())
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_render_snapshot!(harness, "sized_box_label_box_with_background_and_padding");
     }
@@ -512,19 +519,19 @@ mod tests {
         // Copy-pasted from empty_box
         let mut box_props = PropertySet::new();
         box_props.insert(BorderColor::new(palette::css::BLUE));
-        box_props.insert(BorderWidth::all(5.0));
-        box_props.insert(CornerRadius::all(5.0));
+        box_props.insert(BorderWidth::all(5.px()));
+        box_props.insert(CornerRadius::all(5.px()));
 
         // This is the difference
-        box_props.insert(BorderWidth::all(5.2));
+        box_props.insert(BorderWidth::all(5.2.px()));
 
         let widget = SizedBox::empty()
             .width(20.px())
             .height(20.px())
+            .prepare()
             .with_props(box_props);
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
         assert_failing_render_snapshot!(harness, "sized_box_empty_box");
     }

@@ -16,7 +16,7 @@ use crate::core::{
     ViewPathTracker,
 };
 use crate::window_view::{WindowView, WindowViewState};
-use crate::{AppState, ViewCtx};
+use crate::{AppState, Color, ViewCtx};
 
 /// The composition root of Xilem's Masonry backend.
 ///
@@ -28,8 +28,11 @@ pub struct MasonryDriver<State: 'static, Logic> {
     windows: HashMap<WindowId, Window<State>>,
     proxy: Arc<MasonryProxy>,
     runtime: Arc<tokio::runtime::Runtime>,
+    default_base_color: Color,
     // Fonts which will be registered on startup.
     fonts: Vec<Blob<u8>>,
+    // Optional callback invoked once on startup, after windows creation.
+    start_callback: Option<Box<dyn FnOnce(&mut MasonryState<'_>)>>,
 }
 
 struct Window<State: 'static> {
@@ -51,7 +54,9 @@ where
         // (we only ever use it to send MasonryUserEvent::Action with ASYNC_MARKER_WIDGET)
         event_sink: impl Fn(MasonryUserEvent) -> Result<(), MasonryUserEvent> + Send + Sync + 'static,
         runtime: Arc<tokio::runtime::Runtime>,
+        default_base_color: Color,
         fonts: Vec<Blob<u8>>,
+        start_callback: Option<Box<dyn FnOnce(&mut MasonryState<'_>)>>,
     ) -> (Self, Vec<NewWindow>) {
         let mut driver = Self {
             state,
@@ -59,7 +64,9 @@ where
             windows: HashMap::new(),
             proxy: Arc::new(MasonryProxy(Box::new(event_sink))),
             runtime,
+            default_base_color,
             fonts,
+            start_callback,
         };
         let windows: Vec<_> = (driver.logic)(&mut driver.state)
             .map(|view| driver.build_window(view))
@@ -129,7 +136,11 @@ where
     Logic: FnMut(&mut State) -> WindowIter,
     WindowIter: Iterator<Item = WindowView<State>>,
 {
-    fn build_window(&mut self, window_view: WindowView<State>) -> NewWindow {
+    fn build_window(&mut self, mut window_view: WindowView<State>) -> NewWindow {
+        window_view
+            .base_color
+            .get_or_insert(self.default_base_color);
+
         let mut view_ctx = ViewCtx::new(
             Arc::new(WindowProxy(window_view.id, self.proxy.clone())),
             self.runtime.clone(),
@@ -359,6 +370,11 @@ where
                 // because we don't have an easy way to return this to the application.
                 drop(root.register_fonts(font.clone()));
             }
+        }
+
+        // Calls callback functions after windows creation.
+        if let Some(cb) = self.start_callback.take() {
+            cb(state);
         }
     }
 

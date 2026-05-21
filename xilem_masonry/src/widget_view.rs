@@ -1,7 +1,7 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use masonry::core::{FromDynWidget, HasProperty, Property, Widget};
+use masonry::core::{FromDynWidget, Property, UsesProperty, Widget};
 use masonry::kurbo::Affine;
 
 use crate::core::{View, ViewSequence};
@@ -51,7 +51,7 @@ pub trait WidgetView<State: 'static, Action = ()>:
         transformed(self).transform(by)
     }
 
-    /// Set a [`Property`] on this view, when the underlying widget [supports](HasProperty) it.
+    /// Set a [`Property`] on this view, when the underlying widget [supports](UsesProperty) it.
     ///
     /// This overrides previous set properties of the same type.
     ///
@@ -60,13 +60,13 @@ pub trait WidgetView<State: 'static, Action = ()>:
     /// # Examples
     /// ```
     /// # use xilem_masonry as xilem;
-    /// use xilem::{masonry::properties::CornerRadius, view::{text_button, label}, WidgetView};
+    /// use xilem::{masonry::{layout::AsUnit, properties::CornerRadius}, view::{text_button, label}, WidgetView};
     ///
     /// # fn view<State: 'static>() -> impl WidgetView<State> + use<State> {
     /// text_button("click me", |_| {})
-    ///     .prop(CornerRadius { radius: 20.0 })
-    ///     .prop(CornerRadius { radius: 5.0 })
-    /// // The corner radius of this button will be 5.0
+    ///     .prop(CornerRadius { radius: 20.px() })
+    ///     .prop(CornerRadius { radius: 5.px() })
+    /// // The corner radius of this button will be 5px.
     /// # }
     ///
     /// ```
@@ -75,7 +75,7 @@ pub trait WidgetView<State: 'static, Action = ()>:
         State: 'static,
         Action: 'static,
         Self: Sized,
-        Self::Widget: HasProperty<P>,
+        Self::Widget: UsesProperty<P>,
         P: Property + PartialEq + Clone,
     {
         Prop {

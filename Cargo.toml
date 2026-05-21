@@ -6,6 +6,7 @@ members = [
     "xilem_masonry",
     "masonry",
     "masonry_core",
+    "masonry_imaging",
     "masonry_testing",
     "masonry_winit",
 
@@ -28,7 +29,7 @@ members = [
 
 [workspace.package]
 # Xilem version, also used by other packages which want to mimic Xilem's version.
-# Right now those packages include: xilem_core, xilem_masonry, xilem_web, masonry, masonry_core, masonry_testing, masonry_winit.
+# Right now those packages include: xilem_core, xilem_masonry, xilem_web, masonry, masonry_core, masonry_imaging, masonry_testing, masonry_winit.
 #
 # NOTE: When bumping this, remember to also bump the aforementioned other packages'
 #       version in the dependencies section of this file.
@@ -36,7 +37,7 @@ version = "0.4.0"
 
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files.
-rust-version = "1.88"
+rust-version = "1.92"
 license = "Apache-2.0"
 repository = "https://github.com/linebender/xilem"
 
@@ -44,6 +45,7 @@ repository = "https://github.com/linebender/xilem"
 
 masonry = { version = "0.4.0", path = "masonry", default-features = false }
 masonry_core = { version = "0.4.0", path = "masonry_core", default-features = false }
+masonry_imaging = { version = "0.4.0", path = "masonry_imaging", default-features = false }
 masonry_testing = { version = "0.4.0", path = "masonry_testing", default-features = false }
 masonry_winit = { version = "0.4.0", path = "masonry_winit", default-features = false }
 xilem_core = { version = "0.4.0", path = "xilem_core" }
@@ -53,12 +55,23 @@ tree_arena = { version = "0.2.0", path = "tree_arena" }
 include_doc_path = { version = "0.1.0", path = "include_doc_path", package = "linebender_include_doc_path" }
 
 anymore = "1.0.0"
-vello = { version = "0.9.0", default-features = false, features = ["wgpu"] }
+imaging = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2" }
+imaging_wgpu = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2", features = [
+    "wgpu-28",
+] }
+imaging_vello = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2" }
+imaging_vello_hybrid = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2" }
+imaging_vello_cpu = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2" }
+imaging_skia = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2", features = [
+    "gpu",
+] }
+vello = { version = "0.8.0", default-features = false, features = ["wgpu"] }
+wgpu = "28.0.0"
 kurbo = "0.13.0"
-parley = { version = "0.7.0", features = ["accesskit"] }
+parley = { version = "0.8.0", features = ["accesskit"] }
 # TODO: Use no_std correctly in Xilem Web.
 peniko = "0.6.0"
-winit = "0.30.12"
+winit = "0.30.13"
 tracing = { version = "0.1.44", default-features = false }
 tracing-wasm = "0.2.1"
 console_error_panic_hook = "0.1.7"
@@ -66,20 +79,21 @@ console_error_panic_hook = "0.1.7"
 ui-events = { version = "0.3.0", default-features = false, features = ["kurbo"] }
 ui-events-winit = { version = "0.3.0", default-features = false }
 smallvec = "1.15.1"
-hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher"] }
+hashbrown = { version = "0.17.0", default-features = false, features = ["default-hasher"] }
 dpi = "0.1.2"
-image = { version = "0.25.9", default-features = false }
+image = { version = "0.25.10", default-features = false }
 resvg = "0.47.0"
+usvg = "0.47.0"
 web-time = "1.1.0"
-bitflags = "2.10.0"
-accesskit = "0.21.1"
-accesskit_winit = { version = "0.29.2", default-features = false, features = [
+bitflags = "2.11.0"
+accesskit = "0.24.0"
+accesskit_winit = { version = "0.32.2", default-features = false, features = [
     "accesskit_unix",
     "tokio",
     "rwh_06",
 ] }
-accesskit_consumer = "0.31.0"
-time = "0.3.45"
+accesskit_consumer = "0.35.0"
+time = "0.3.47"
 reqwest = { version = "0.12.28", default-features = false, features = [
     # We use rustls as Android doesn't ship with openssl
     # and this is likely to be easiest to get working.

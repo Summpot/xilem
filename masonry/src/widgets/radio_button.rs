@@ -7,22 +7,18 @@ use accesskit::{Node, Role, Toggled};
 use include_doc_path::include_doc_path;
 use masonry_core::debug_panic;
 use tracing::{Span, trace, trace_span};
-use vello::Scene;
 
 use crate::core::{
-    AccessCtx, AccessEvent, ArcStr, ChildrenIds, EventCtx, HasProperty, LayoutCtx, MeasureCtx,
-    NewWidget, PaintCtx, PointerEvent, PrePaintProps, PropertiesMut, PropertiesRef, RegisterCtx,
-    TextEvent, Update, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod, keyboard::Key,
+    AccessCtx, AccessEvent, ArcStr, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, NewWidget,
+    PaintCtx, PointerEvent, PrePaintProps, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent,
+    Update, UpdateCtx, UsesProperty, Widget, WidgetId, WidgetMut, WidgetPod, keyboard::Key,
     paint_background, paint_box_shadow,
 };
-use crate::kurbo::{Affine, Axis, Cap, Circle, Dashes, Join, Point, Size, Stroke};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
-use crate::properties::{
-    BorderColor, BorderWidth, CheckmarkColor, CheckmarkStrokeWidth, DisabledCheckmarkColor,
-    FocusedBorderColor, HoveredBorderColor,
-};
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, Cap, Circle, Dashes, Join, Point, Size, Stroke};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
+use crate::properties::{BorderColor, BorderWidth, CheckmarkColor, CheckmarkStrokeWidth};
 use crate::theme;
-use crate::util::{fill, stroke};
 use crate::widgets::{Label, RadioGroup};
 
 /// A radio button that can be toggled.
@@ -92,8 +88,7 @@ impl RadioButton {
     }
 }
 
-impl HasProperty<DisabledCheckmarkColor> for RadioButton {}
-impl HasProperty<CheckmarkColor> for RadioButton {}
+impl UsesProperty<CheckmarkColor> for RadioButton {}
 
 /// The action type emitted by [`RadioButton`] when it is selected.
 ///
@@ -161,11 +156,9 @@ impl Widget for RadioButton {
                 ctx.capture_pointer();
                 trace!("RadioButton {:?} pressed", ctx.widget_id());
             }
-            PointerEvent::Up { .. } => {
-                if ctx.is_active() && ctx.is_hovered() {
-                    trace!("RadioButton {:?} released", ctx.widget_id());
-                    self.select(ctx);
-                }
+            PointerEvent::Up { .. } if ctx.is_active() && ctx.is_hovered() => {
+                trace!("RadioButton {:?} released", ctx.widget_id());
+                self.select(ctx);
             }
             _ => (),
         }
@@ -234,7 +227,6 @@ impl Widget for RadioButton {
 
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
         CheckmarkStrokeWidth::prop_changed(ctx, property_type);
-        DisabledCheckmarkColor::prop_changed(ctx, property_type);
         CheckmarkColor::prop_changed(ctx, property_type);
     }
 
@@ -244,25 +236,21 @@ impl Widget for RadioButton {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let check_side = theme::BASIC_WIDGET_HEIGHT.dp(scale);
-        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING.dp(scale);
+        cross_length: Option<Length>,
+    ) -> Length {
+        let check_side = theme::BASIC_WIDGET_HEIGHT;
+        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING;
 
         let calc_other_length = |axis| match axis {
-            Axis::Horizontal => check_side + check_padding,
-            Axis::Vertical => 0.,
+            Axis::Horizontal => check_side.saturating_add(check_padding),
+            Axis::Vertical => Length::ZERO,
         };
         let other_length = calc_other_length(axis);
 
         let cross = axis.cross();
         let cross_space = cross_length.map(|cross_length| {
             let cross_other_length = calc_other_length(cross);
-            (cross_length - cross_other_length).max(0.)
+            cross_length.saturating_sub(cross_other_length)
         });
 
         let auto_length = len_req.reduce(other_length).into();
@@ -277,18 +265,14 @@ impl Widget for RadioButton {
         );
 
         match axis {
-            Axis::Horizontal => label_length + other_length,
-            Axis::Vertical => label_length.max(check_side) + other_length,
+            Axis::Horizontal => label_length.saturating_add(other_length),
+            Axis::Vertical => label_length.max(check_side).saturating_add(other_length),
         }
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let check_side = theme::BASIC_WIDGET_HEIGHT.dp(scale);
-        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING.dp(scale);
+        let check_side = theme::BASIC_WIDGET_HEIGHT.get();
+        let check_padding = theme::WIDGET_CONTROL_COMPONENT_PADDING.get();
 
         let space = Size::new(
             (size.width - (check_side + check_padding)).max(0.),
@@ -304,12 +288,18 @@ impl Widget for RadioButton {
         ctx.derive_baselines(&self.label);
     }
 
-    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn pre_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let bbox = ctx.border_box();
-        let p = PrePaintProps::fetch(ctx, props);
+        let cache = ctx.property_cache();
+        let p = PrePaintProps::fetch(props, cache);
 
-        paint_box_shadow(scene, bbox, p.box_shadow, p.corner_radius);
-        paint_background(scene, bbox, p.background, p.border_width, p.corner_radius);
+        paint_box_shadow(painter, bbox, p.box_shadow, p.corner_radius);
+        paint_background(painter, bbox, p.background, p.border_width, p.corner_radius);
 
         // Paint focus indicator around the entire widget (box + label)
         if ctx.is_focus_target() || ctx.is_hovered() {
@@ -331,73 +321,43 @@ impl Widget for RadioButton {
                 dash_offset: 0.0,
             };
             let focus_path = focus_rect.to_rounded_rect(focus_radius);
-            scene.stroke(
-                &focus_stroke,
-                Affine::IDENTITY,
-                focus_color,
-                None,
-                &focus_path,
-            );
+            painter
+                .stroke(focus_path, &focus_stroke, focus_color)
+                .draw();
         }
         // Skip painting the regular border while the check border uses that property
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let cache = ctx.property_cache();
+        let border_color = *props.get::<BorderColor>(cache);
+        let border_width = *props.get::<BorderWidth>(cache);
+        let brush = *props.get::<CheckmarkColor>(cache);
 
-        let is_focused = ctx.is_focus_target();
-        let is_hovered = ctx.is_hovered();
-
-        let check_side = theme::BASIC_WIDGET_HEIGHT.dp(scale);
+        let check_side = theme::BASIC_WIDGET_HEIGHT.get();
         let check_size = Size::new(check_side, check_side);
-
-        let border_width = props.get::<BorderWidth>();
 
         let border_circle = Circle::new(
             check_size.to_rect().center(),
-            (check_side - border_width.width) * 0.5,
+            (check_side - border_width.width.get()) * 0.5,
         );
-
-        let border_color = if is_focused && let Some(fb) = props.get_defined::<FocusedBorderColor>()
-        {
-            &fb.0
-        } else if is_hovered && let Some(hb) = props.get_defined::<HoveredBorderColor>() {
-            &hb.0
-        } else {
-            props.get::<BorderColor>()
-        };
 
         // Paint the radio button border
-        stroke(
-            scene,
-            &border_circle,
-            border_color.color,
-            border_width.width,
-        );
-
-        // Paint the radio button box background and border
-        stroke(
-            scene,
-            &border_circle,
-            border_color.color,
-            border_width.width,
-        );
+        let border_stroke = Stroke::new(border_width.width.get());
+        painter
+            .stroke(border_circle, &border_stroke, border_color.color)
+            .draw();
 
         // Paint the checkmark if checked
         if self.selected {
-            let brush = if ctx.is_disabled()
-                && let Some(dc) = props.get_defined::<DisabledCheckmarkColor>()
-            {
-                &dc.0
-            } else {
-                props.get::<CheckmarkColor>()
-            };
-
             // TODO: Create a prop for ellipse size. Default: 50% of border size
             let check_circle = Circle::new(check_size.to_rect().center(), check_side * 0.25);
-            fill(scene, &check_circle, brush.color);
+            painter.fill(check_circle, brush.color).draw();
         }
     }
 
@@ -449,12 +409,10 @@ mod tests {
     #[test]
     fn simple_radio_button() {
         let radio_tag = WidgetTag::unique();
-        let widget = NewWidget::new_with_tag(RadioButton::new(false, "Hello"), radio_tag);
+        let widget = NewWidget::new(RadioButton::new(false, "Hello")).with_tag(radio_tag);
         let widget = NewWidget::new(RadioGroup::new(widget));
 
-        let window_size = Size::new(100.0, 40.0);
-        let mut harness =
-            TestHarness::create_with_size(default_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(default_property_set(), widget, (100, 40));
         let radio_id = harness.get_widget(radio_tag).id();
 
         assert_render_snapshot!(harness, "radio_button_hello_unchecked");
@@ -465,7 +423,7 @@ mod tests {
 
         assert_render_snapshot!(harness, "radio_button_hello_hovered");
 
-        harness.mouse_click_on(radio_id);
+        harness.mouse_click_on(radio_id, None);
         assert_eq!(
             harness.pop_action::<RadioButtonSelected>(),
             Some((RadioButtonSelected, radio_id))
@@ -500,8 +458,7 @@ mod tests {
                 .with_fixed(group)
                 .main_axis_alignment(MainAxisAlignment::Center),
         );
-        let mut harness =
-            TestHarness::create_with_size(default_property_set(), root, Size::new(120.0, 40.0));
+        let mut harness = TestHarness::create_with_size(default_property_set(), root, (120, 40));
 
         harness.focus_on(Some(radio_id));
         assert_render_snapshot!(harness, "radio_button_focus_focused");
@@ -512,12 +469,12 @@ mod tests {
         let image_1 = {
             let label = Label::new("The quick brown fox jumps over the lazy dog")
                 .with_style(StyleProperty::FontSize(20.0));
-            let label = NewWidget::new_with_props(label, ContentColor::new(ACCENT_COLOR));
+            let label = NewWidget::new(label).with_props(ContentColor::new(ACCENT_COLOR));
             let radio = NewWidget::new(RadioButton::from_label(true, label));
             let group = NewWidget::new(RadioGroup::new(radio));
 
             let mut harness =
-                TestHarness::create_with_size(default_property_set(), group, Size::new(50.0, 50.0));
+                TestHarness::create_with_size(default_property_set(), group, (50, 50));
 
             harness.render()
         };
@@ -527,7 +484,7 @@ mod tests {
             let group = NewWidget::new(RadioGroup::new(radio));
 
             let mut harness =
-                TestHarness::create_with_size(default_property_set(), group, Size::new(50.0, 50.0));
+                TestHarness::create_with_size(default_property_set(), group, (50, 50));
 
             harness.edit_root_widget(|mut group| {
                 let mut radio = RadioGroup::child_mut(&mut group);

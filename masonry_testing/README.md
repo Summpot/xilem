@@ -67,6 +67,16 @@ UI screenshots compress well, so we expect this to be scalable.
 For repositories hosted on GitHub, this scheme also allows for including screenshots of your app or
 widgets in hosted documentation, although we haven't documented this publicly yet.
 
+## Feature flags
+
+Screenshot rendering is backend-driven:
+
+- `default`: Enables screenshot rendering via `imaging_vello`.
+- `imaging_vello`: Enables screenshot rendering via `imaging_vello`.
+- `imaging_vello_hybrid`: Enables screenshot rendering via `imaging_vello_hybrid`.
+- `imaging_vello_cpu`: Enables screenshot rendering via `imaging_vello_cpu`.
+- `imaging_skia`: Enables screenshot rendering via `imaging_skia`.
+
 ## Examples
 
 For examples of this crate in use
@@ -79,7 +89,7 @@ For examples of this crate in use
 
 ## Minimum supported Rust Version (MSRV)
 
-This version of Masonry Testing has been verified to compile with **Rust 1.88** and later.
+This version of Masonry Testing has been verified to compile with **Rust 1.92** and later.
 
 Future versions of Masonry Testing might increase the Rust version requirement.
 It will not be treated as a breaking change and as such can even happen with small patch releases.

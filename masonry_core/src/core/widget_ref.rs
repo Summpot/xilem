@@ -3,8 +3,8 @@
 
 use std::ops::Deref;
 
+use kurbo::Point;
 use smallvec::SmallVec;
-use vello::kurbo::Point;
 
 use crate::core::{FromDynWidget, PropertiesRef, Property, QueryCtx, Widget, WidgetId};
 
@@ -97,7 +97,9 @@ impl<'w, W: Widget + ?Sized> WidgetRef<'w, W> {
     /// If the default property set has an entry for `P`, returns that entry.
     /// Otherwise returns [`Property::static_default()`].
     pub fn get_prop<T: Property>(&self) -> &T {
-        self.ctx.properties.get::<T>()
+        self.ctx
+            .properties
+            .get_without_saving::<T>(self.ctx.property_cache())
     }
 
     /// Attempts to downcast to `WidgetRef` of concrete widget type.
@@ -115,7 +117,7 @@ impl<'w, W: Widget + ?Sized> WidgetRef<'w, W> {
             .children_ids()
             .iter()
             .map(|&id| {
-                let Some(node_ref) = self.ctx.children.into_item(id) else {
+                let Some(node_ref) = self.ctx.children.item(id) else {
                     panic!(
                         "Error in '{}' #{parent_id}: child #{id} has not been added to tree",
                         self.widget.short_type_name()
@@ -126,16 +128,23 @@ impl<'w, W: Widget + ?Sized> WidgetRef<'w, W> {
                 let widget = &*node_ref.item.widget;
                 let state = &node_ref.item.state;
                 let properties = &node_ref.item.properties;
+                let class_set = &node_ref.item.class_set;
+                let stack = self
+                    .ctx
+                    .property_arena
+                    .get(state.property_stack_id, widget.type_id());
 
                 let ctx = QueryCtx {
                     global_state: self.ctx.global_state,
                     widget_state: state,
                     properties: PropertiesRef {
-                        set: properties,
+                        local: properties,
                         default_map: self.ctx.properties.default_map,
+                        stack,
+                        class_set,
                     },
                     children,
-                    default_properties: self.ctx.default_properties,
+                    property_arena: self.ctx.property_arena,
                 };
 
                 WidgetRef { ctx, widget }

@@ -5,24 +5,21 @@ use std::any::TypeId;
 use std::mem::Discriminant;
 
 use accesskit::{Node, Role};
-use parley::PlainEditor;
-use parley::editing::{Generation, SplitString};
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::keyboard::{Key, KeyState, NamedKey};
 use crate::core::{
     AccessCtx, AccessEvent, BrushIndex, ChildrenIds, CursorIcon, EventCtx, Ime, LayoutCtx,
     MeasureCtx, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerUpdate,
     PropertiesMut, PropertiesRef, QueryCtx, RegisterCtx, StyleProperty, TextEvent, Update,
-    UpdateCtx, Widget, WidgetId, WidgetMut, render_text,
+    UpdateCtx, Widget, WidgetId, WidgetMut, render_text, set_accesskit_brush_properties,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Rect, Size};
-use crate::layout::LenReq;
-use crate::peniko::Fill;
-use crate::properties::{
-    CaretColor, ContentColor, DisabledContentColor, SelectionColor, UnfocusedSelectionColor,
-};
+use crate::layout::{AsUnit, LenReq, Length};
+use crate::parley::PlainEditor;
+use crate::parley::editing::{Generation, SplitString};
+use crate::properties::{CaretColor, ContentColor, SelectionColor};
 use crate::theme::default_text_styles;
 use crate::util::bounding_box_to_rect;
 use crate::util::debug_panic;
@@ -93,7 +90,7 @@ impl TextArea<true> {
     ///
     /// Useful for creating a styled [`TextInput`](super::TextInput).
     // This is written out fully to appease rust-analyzer; StyleProperty is imported but not recognised.
-    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](parley::StyleProperty::FontSize).
+    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn new_editable(text: &str) -> Self {
         Self::new(text)
     }
@@ -104,7 +101,7 @@ impl TextArea<false> {
     ///
     /// Useful for creating a styled [`Prose`](super::Prose).
     // This is written out fully to appease rust-analyzer; StyleProperty is imported but not recognised.
-    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](parley::StyleProperty::FontSize).
+    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn new_immutable(text: &str) -> Self {
         Self::new(text)
     }
@@ -114,7 +111,7 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
     /// Creates a new `TextArea` with the given text and default settings.
     ///
     // This is written out fully to appease rust-analyzer; StyleProperty is imported but not recognised.
-    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](parley::StyleProperty::FontSize).
+    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn new(text: &str) -> Self {
         let mut editor = PlainEditor::new(theme::TEXT_SIZE_NORMAL);
         default_text_styles(editor.edit_styles());
@@ -134,18 +131,22 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
 
     /// Sets a style property for the new text area.
     ///
-    /// Style properties set by this method include [text size](parley::StyleProperty::FontSize),
-    /// [font family](parley::StyleProperty::FontStack), [font weight](parley::StyleProperty::FontWeight),
-    /// and [variable font parameters](parley::StyleProperty::FontVariations).
-    /// The styles inserted here apply to the entire text; we currently do not
-    /// support inline rich text.
+    /// Style properties set by this method include [text size], [font family], [font weight],
+    /// and [variable font parameters]. The styles inserted here apply to the entire text;
+    /// we currently do not support inline rich text.
     ///
-    /// Setting [`StyleProperty::Brush`](parley::StyleProperty::Brush) is not supported.
-    /// Use [`ContentColor`] and [`DisabledContentColor`] properties instead.
-    /// This is also not additive for [font stacks](parley::StyleProperty::FontStack), and
-    /// instead overwrites any previous font stack.
+    /// Setting [`StyleProperty::Brush`] is not supported.
+    /// Use [`ContentColor`] property instead.
+    /// This is also not additive for [font family],
+    /// and instead overwrites any previous font stack.
     ///
     /// To set a style property on an active text area, use [`insert_style`](Self::insert_style).
+    ///
+    /// [text size]: crate::parley::StyleProperty::FontSize
+    /// [font family]: crate::parley::StyleProperty::FontFamily
+    /// [font weight]: crate::parley::StyleProperty::FontWeight
+    /// [variable font parameters]: crate::parley::StyleProperty::FontVariations
+    /// [`StyleProperty::Brush`]: crate::parley::StyleProperty::Brush
     #[track_caller]
     pub fn with_style(mut self, property: impl Into<StyleProperty>) -> Self {
         self.insert_style_inner(property.into());
@@ -262,18 +263,22 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
 impl<const EDITABLE: bool> TextArea<EDITABLE> {
     /// Sets font styling for an active text area.
     ///
-    /// Style properties set by this method include [text size](parley::StyleProperty::FontSize),
-    /// [font family](parley::StyleProperty::FontStack), [font weight](parley::StyleProperty::FontWeight),
-    /// and [variable font parameters](parley::StyleProperty::FontVariations).
-    /// The styles inserted here apply to the entire text; we currently do not
-    /// support inline rich text.
+    /// Style properties set by this method include [text size], [font family], [font weight],
+    /// and [variable font parameters]. The styles inserted here apply to the entire text;
+    /// we currently do not support inline rich text.
     ///
-    /// Setting [`StyleProperty::Brush`](parley::StyleProperty::Brush) is not supported.
-    /// Use [`ContentColor`] and [`DisabledContentColor`] properties instead.
-    /// This is also not additive for [font stacks](parley::StyleProperty::FontStack), and
-    /// instead overwrites any previous font stack.
+    /// Setting [`StyleProperty::Brush`] is not supported.
+    /// Use [`ContentColor`] property instead.
+    /// This is also not additive for [font family],
+    /// and instead overwrites any previous font stack.
     ///
     /// This is the runtime equivalent of [`with_style`](Self::with_style).
+    ///
+    /// [text size]: crate::parley::StyleProperty::FontSize
+    /// [font family]: crate::parley::StyleProperty::FontFamily
+    /// [font weight]: crate::parley::StyleProperty::FontWeight
+    /// [variable font parameters]: crate::parley::StyleProperty::FontVariations
+    /// [`StyleProperty::Brush`]: crate::parley::StyleProperty::Brush
     #[track_caller]
     pub fn insert_style(
         this: &mut WidgetMut<'_, Self>,
@@ -290,7 +295,7 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
     /// Styles which are removed return to Parley's default values.
     /// In most cases, these are the defaults for this widget.
     ///
-    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](parley::StyleProperty::FontSize).
+    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn retain_styles(this: &mut WidgetMut<'_, Self>, f: impl FnMut(&StyleProperty) -> bool) {
         this.widget.editor.edit_styles().retain(f);
 
@@ -306,7 +311,7 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
     /// the desired property and passing it to [`core::mem::discriminant`].
     /// Getting this discriminant is usually possible in a `const` context.
     ///
-    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](parley::StyleProperty::FontSize).
+    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn remove_style(
         this: &mut WidgetMut<'_, Self>,
         property: Discriminant<StyleProperty>,
@@ -510,19 +515,17 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                 ctx.request_focus();
                 ctx.capture_pointer();
             }
-            PointerEvent::Move(PointerUpdate { current, .. }) => {
-                if ctx.is_active() {
-                    let cursor_pos = ctx.local_position(current.position);
-                    let (fctx, lctx) = ctx.text_contexts();
-                    self.editor
-                        .driver(fctx, lctx)
-                        .extend_selection_to_point(cursor_pos.x as f32, cursor_pos.y as f32);
-                    let new_generation = self.editor.generation();
-                    if new_generation != self.rendered_generation {
-                        ctx.request_render();
-                        ctx.set_ime_area(self.ime_area());
-                        self.rendered_generation = new_generation;
-                    }
+            PointerEvent::Move(PointerUpdate { current, .. }) if ctx.is_active() => {
+                let cursor_pos = ctx.local_position(current.position);
+                let (fctx, lctx) = ctx.text_contexts();
+                self.editor
+                    .driver(fctx, lctx)
+                    .extend_selection_to_point(cursor_pos.x as f32, cursor_pos.y as f32);
+                let new_generation = self.editor.generation();
+                if new_generation != self.rendered_generation {
+                    ctx.request_render();
+                    ctx.set_ime_area(self.ime_area());
+                    self.rendered_generation = new_generation;
                 }
             }
             _ => {}
@@ -844,9 +847,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
         CaretColor::prop_changed(ctx, property_type);
         ContentColor::prop_changed(ctx, property_type);
-        DisabledContentColor::prop_changed(ctx, property_type);
         SelectionColor::prop_changed(ctx, property_type);
-        UnfocusedSelectionColor::prop_changed(ctx, property_type);
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
@@ -875,8 +876,8 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         // Currently we only support the common horizontal-tb writing mode,
         // so we hardcode the assumption that inline axis is horizontal.
         let inline = Axis::Horizontal;
@@ -893,18 +894,18 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                     // This is a common optimization also present on the web.
                     match len_req {
                         // Zero space will get us the length of longest unbreakable word
-                        LenReq::MinContent => Some(0.),
+                        LenReq::MinContent => Some(Length::ZERO),
                         // Unbounded space will get us the length of the unwrapped string
                         LenReq::MaxContent => None,
                         // Attempt to wrap according to the parent's request
                         LenReq::FitContent(space) => Some(space),
                     }
                 } else {
-                    // Block axis is dependant on the inline axis, so cross_length dominates.
+                    // Block axis is dependent on the inline axis, so cross_length dominates.
                     // If there is no explicit cross_length present, we fall back to inline defaults.
                     match len_req {
                         // Fallback is inline axis MinContent
-                        LenReq::MinContent => cross_length.or(Some(0.)),
+                        LenReq::MinContent => cross_length.or(Some(Length::ZERO)),
                         // Fallback is inline axis MaxContent, even for FitContent, because
                         // as we don't have the inline space bound we'll consider it unbounded.
                         LenReq::MaxContent | LenReq::FitContent(_) => cross_length,
@@ -914,7 +915,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
             // If we're never wrapping, then there's no max advance.
             false => None,
         }
-        .map(|v| v as f32);
+        .map(|v| v.get() as f32);
 
         let mut reset_max_advance = None;
         if self.last_max_advance != max_advance {
@@ -943,7 +944,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
             self.editor.refresh_layout(fctx, lctx);
         }
 
-        length
+        length.px()
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
@@ -985,7 +986,12 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
         ctx.set_ime_area(self.ime_area());
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let layout = if let Some(layout) = self.editor.try_layout() {
             layout
         } else {
@@ -996,47 +1002,31 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
             self.editor.try_layout().unwrap()
         };
         if ctx.is_focus_target() {
-            let caret_color = props.get::<CaretColor>().color;
-            let selection_color = if !ctx.is_window_focused()
-                && let Some(us) = props.get_defined::<UnfocusedSelectionColor>()
-            {
-                us.0.color
-            } else {
-                props.get::<SelectionColor>().color
+            let (caret_color, selection_color) = {
+                let cache = ctx.property_cache();
+                (
+                    props.get::<CaretColor>(cache).color,
+                    props.get::<SelectionColor>(cache).color,
+                )
             };
             for (rect, _) in self.editor.selection_geometry().iter() {
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    selection_color,
-                    None,
-                    &bounding_box_to_rect(*rect),
-                );
+                let rect = bounding_box_to_rect(*rect);
+                painter.fill(rect, selection_color).draw();
             }
             if let Some(cursor) = self.editor.cursor_geometry(1.5)
                 && self.anim_cursor_visible
                 && ctx.is_window_focused()
             {
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    caret_color,
-                    None,
-                    &bounding_box_to_rect(cursor),
-                );
+                let rect = bounding_box_to_rect(cursor);
+                painter.fill(rect, caret_color).draw();
             };
         }
 
-        let text_color = if ctx.is_disabled()
-            && let Some(dc) = props.get_defined::<DisabledContentColor>()
-        {
-            &dc.0
-        } else {
-            props.get::<ContentColor>()
-        };
+        let cache = ctx.property_cache();
+        let text_color = props.get::<ContentColor>(cache);
 
         render_text(
-            scene,
+            painter,
             Affine::IDENTITY,
             layout,
             &[text_color.color.into()],
@@ -1062,15 +1052,24 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
     fn accessibility(
         &mut self,
         ctx: &mut AccessCtx<'_>,
-        _props: &PropertiesRef<'_>,
+        props: &PropertiesRef<'_>,
         node: &mut Node,
     ) {
         if !EDITABLE {
             node.set_read_only();
         }
-        let updated =
-            self.editor
-                .try_accessibility(ctx.tree_update(), node, AccessCtx::next_node_id, 0., 0.);
+
+        let cache = ctx.property_cache();
+        let text_color = props.get::<ContentColor>(cache);
+
+        let updated = self.editor.try_accessibility(
+            ctx.tree_update(),
+            node,
+            AccessCtx::next_node_id,
+            0.,
+            0.,
+            |node, style| set_accesskit_brush_properties(node, style, &[text_color.color.into()]),
+        );
 
         let Some(()) = updated else {
             // We always perform layout before accessibility, so this panic should be unreachable.
@@ -1117,7 +1116,6 @@ mod tests {
 
     use super::*;
     use crate::core::{KeyboardEvent, Modifiers, NewWidget, PropertySet};
-    use crate::kurbo::Size;
     use crate::palette;
     use crate::testing::TestHarness;
     use crate::theme::test_property_set;
@@ -1130,8 +1128,7 @@ mod tests {
                 TextArea::new_immutable("String which will wrap").with_word_wrap(true),
             );
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), area, Size::new(60.0, 40.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), area, (60, 40));
 
             harness.render()
         };
@@ -1141,8 +1138,7 @@ mod tests {
                 TextArea::new_immutable("String which will wrap").with_word_wrap(false),
             );
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), area, Size::new(60.0, 40.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), area, (60, 40));
 
             let without_wrapping = harness.render();
 
@@ -1173,14 +1169,11 @@ mod tests {
 
     #[test]
     fn edit_textarea() {
-        let mut test_params = TestHarnessParams::default();
-        test_params.window_size = Size::new(200.0, 20.0);
+        let test_params = TestHarnessParams::default().with_size((200, 20));
 
         let base_target = {
-            let area = NewWidget::new_with_props(
-                TextArea::new_immutable("Test string"),
-                PropertySet::new().with(ContentColor::new(palette::css::AZURE)),
-            );
+            let area = NewWidget::new(TextArea::new_immutable("Test string"))
+                .with_props(PropertySet::new().with(ContentColor::new(palette::css::AZURE)));
 
             let mut harness = TestHarness::create_with(test_property_set(), area, test_params);
 
@@ -1188,10 +1181,8 @@ mod tests {
         };
 
         {
-            let area = NewWidget::new_with_props(
-                TextArea::new_immutable("Different string"),
-                PropertySet::new().with(ContentColor::new(palette::css::AZURE)),
-            );
+            let area = NewWidget::new(TextArea::new_immutable("Different string"))
+                .with_props(PropertySet::new().with(ContentColor::new(palette::css::AZURE)));
 
             let mut harness = TestHarness::create_with(test_property_set(), area, test_params);
 

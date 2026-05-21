@@ -9,6 +9,8 @@
 // TODO - Find some way to check that code chunks in docs
 // are up to date with this file.
 
+#![expect(missing_debug_implementations, reason = "Example code")]
+
 use crate as masonry;
 
 // Note: The "// ---" lines separate blocks of code which are included together in
@@ -19,7 +21,7 @@ use masonry::core::{Widget, WidgetPod};
 // ---
 use masonry::core::{LayoutCtx, MeasureCtx, PropertiesRef};
 use masonry::kurbo::{Axis, Point, Size};
-use masonry::layout::{LayoutSize, LenDef, LenReq, SizeDef};
+use masonry::layout::{AsUnit, LayoutSize, LenDef, LenReq, Length, SizeDef};
 // ---
 use masonry::core::ComposeCtx;
 // ---
@@ -28,13 +30,13 @@ use masonry::core::RegisterCtx;
 use masonry::core::ChildrenIds;
 // ---
 use masonry::core::{NewWidget, WidgetMut};
+use masonry::imaging::Painter;
 // ---
 use masonry::accesskit::{Node, Role};
 use masonry::core::{
     AccessCtx, AccessEvent, EventCtx, NoAction, PaintCtx, PointerEvent, PropertiesMut, TextEvent,
     Update, UpdateCtx,
 };
-use masonry::vello::Scene;
 
 // ---
 
@@ -92,28 +94,29 @@ impl Widget for VerticalStack {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let (len_req, min_result) = match len_req {
-            LenReq::MinContent | LenReq::MaxContent => (len_req, 0.),
+            LenReq::MinContent | LenReq::MaxContent => (len_req, Length::ZERO),
             LenReq::FitContent(space) => (LenReq::MinContent, space),
         };
 
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
         
-        let mut length: f64 = 0.;
+        let mut length = Length::ZERO;
         for child in &mut self.children {
             let child_length = ctx.compute_length(child, auto_length, context_size, axis, cross_length);
             match axis {
                 Axis::Horizontal => length = length.max(child_length),
-                Axis::Vertical => length += child_length,
+                Axis::Vertical => length = length.saturating_add(child_length),
             }
         }
 
         if axis == Axis::Vertical {
             let gap_count = (self.children.len() - 1) as f64;
-            length += gap_count * self.gap;
+            let gaps_length = gap_count * self.gap;
+            length = length.saturating_add(gaps_length.px());
         }
 
         min_result.max(length)
@@ -129,8 +132,8 @@ impl Widget for VerticalStack {
         let total_child_vertical_space = size.height - self.gap * gap_count;
         let child_vertical_space = total_child_vertical_space / self.children.len() as f64;
 
-        let width_def = LenDef::FitContent(size.width);
-        let height_def = LenDef::FitContent(child_vertical_space.max(0.));
+        let width_def = LenDef::FitContent(size.width.px());
+        let height_def = LenDef::FitContent(child_vertical_space.max(0.).px());
         let auto_size = SizeDef::new(width_def, height_def);
         let context_size = size.into();
 
@@ -150,7 +153,7 @@ impl Widget for VerticalStack {
 
     // ---
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _painter: &mut Painter<'_>) {}
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer

@@ -3,24 +3,21 @@
 
 //! Traits used to set custom styles on views.
 
-use masonry::core::HasProperty;
-use masonry::layout::Dim;
+use masonry::core::UsesProperty;
+use masonry::layout::{Dim, Length};
+use masonry::peniko::Color;
 pub use masonry::properties::types::{Gradient, GradientShape};
 pub use masonry::properties::{
-    ActiveBackground, Background, BorderColor, BorderWidth, BoxShadow, CornerRadius,
-    DisabledBackground, HoveredBorderColor, Padding,
+    Background, BorderColor, BorderWidth, BoxShadow, CornerRadius, Padding,
 };
-use masonry::properties::{
-    ContentColor, Dimensions, DisabledContentColor, FocusedBorderColor, Gap, LineBreaking,
-};
-use vello::peniko::Color;
+use masonry::properties::{ContentColor, Dimensions, Gap, LineBreaking};
 
 use crate::WidgetView;
 use crate::view::Prop;
 
 /// Trait implemented by most widget views that lets you style their properties.
 ///
-/// Which methods you can use will depend whether the underlying widget implements [`HasProperty`].
+/// Which methods you can use will depend whether the underlying widget implements [`UsesProperty`].
 pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Sized {
     /// Sets the element's dimensions.
     ///
@@ -30,7 +27,7 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// [`height`]: Style::height
     fn dims(self, dims: impl Into<Dimensions>) -> Prop<Dimensions, Self, State, Action>
     where
-        Self::Widget: HasProperty<Dimensions>,
+        Self::Widget: UsesProperty<Dimensions>,
     {
         self.prop(dims.into())
     }
@@ -40,7 +37,7 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// This will reset the element's height to [`Dim::Auto`].
     fn width(self, dim: impl Into<Dim>) -> Prop<Dimensions, Self, State, Action>
     where
-        Self::Widget: HasProperty<Dimensions>,
+        Self::Widget: UsesProperty<Dimensions>,
     {
         self.prop(Dimensions::AUTO.with_width(dim.into()))
     }
@@ -50,7 +47,7 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// This will reset the element's width to [`Dim::Auto`].
     fn height(self, dim: impl Into<Dim>) -> Prop<Dimensions, Self, State, Action>
     where
-        Self::Widget: HasProperty<Dimensions>,
+        Self::Widget: UsesProperty<Dimensions>,
     {
         self.prop(Dimensions::AUTO.with_height(dim.into()))
     }
@@ -60,25 +57,15 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// "Content color" usually means text or text decorations.
     fn color(self, color: Color) -> Prop<ContentColor, Self, State, Action>
     where
-        Self::Widget: HasProperty<ContentColor>,
+        Self::Widget: UsesProperty<ContentColor>,
     {
         self.prop(ContentColor { color })
-    }
-
-    /// Sets the element's content color when disabled.
-    ///
-    /// "Content color" usually means text or text decorations.
-    fn disabled_color(self, color: Color) -> Prop<DisabledContentColor, Self, State, Action>
-    where
-        Self::Widget: HasProperty<DisabledContentColor>,
-    {
-        self.prop(DisabledContentColor(ContentColor { color }))
     }
 
     /// Sets the element's background to a color/gradient.
     fn background(self, background: impl Into<Background>) -> Prop<Background, Self, State, Action>
     where
-        Self::Widget: HasProperty<Background>,
+        Self::Widget: UsesProperty<Background>,
     {
         self.prop(background.into())
     }
@@ -86,7 +73,7 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// Sets the element's background to a color.
     fn background_color(self, color: Color) -> Prop<Background, Self, State, Action>
     where
-        Self::Widget: HasProperty<Background>,
+        Self::Widget: UsesProperty<Background>,
     {
         self.prop(Background::Color(color))
     }
@@ -94,82 +81,19 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// Sets the element's background to a gradient.
     fn background_gradient(self, gradient: Gradient) -> Prop<Background, Self, State, Action>
     where
-        Self::Widget: HasProperty<Background>,
+        Self::Widget: UsesProperty<Background>,
     {
         self.prop(Background::Gradient(gradient))
-    }
-
-    /// Sets the element's background when pressed to a color/gradient.
-    fn active_background(
-        self,
-        background: impl Into<Background>,
-    ) -> Prop<ActiveBackground, Self, State, Action>
-    where
-        Self::Widget: HasProperty<ActiveBackground>,
-    {
-        self.prop(ActiveBackground(background.into()))
-    }
-
-    /// Sets the element's background when pressed to a color.
-    fn active_background_color(self, color: Color) -> Prop<ActiveBackground, Self, State, Action>
-    where
-        Self::Widget: HasProperty<ActiveBackground>,
-    {
-        self.prop(ActiveBackground(Background::Color(color)))
-    }
-
-    /// Sets the element's background when pressed to a gradient.
-    fn active_background_gradient(
-        self,
-        gradient: Gradient,
-    ) -> Prop<ActiveBackground, Self, State, Action>
-    where
-        Self::Widget: HasProperty<ActiveBackground>,
-    {
-        self.prop(ActiveBackground(Background::Gradient(gradient)))
-    }
-
-    /// Sets the element's background when disabled to a color/gradient.
-    fn disabled_background(
-        self,
-        background: impl Into<Background>,
-    ) -> Prop<DisabledBackground, Self, State, Action>
-    where
-        Self::Widget: HasProperty<DisabledBackground>,
-    {
-        self.prop(DisabledBackground(background.into()))
-    }
-
-    /// Sets the element's background when disabled to a color.
-    fn disabled_background_color(
-        self,
-        color: Color,
-    ) -> Prop<DisabledBackground, Self, State, Action>
-    where
-        Self::Widget: HasProperty<DisabledBackground>,
-    {
-        self.prop(DisabledBackground(Background::Color(color)))
-    }
-
-    /// Sets the element's background when disabled to a gradient.
-    fn disabled_background_gradient(
-        self,
-        gradient: Gradient,
-    ) -> Prop<DisabledBackground, Self, State, Action>
-    where
-        Self::Widget: HasProperty<DisabledBackground>,
-    {
-        self.prop(DisabledBackground(Background::Gradient(gradient)))
     }
 
     /// Sets the element's border color and width.
     fn border(
         self,
         color: Color,
-        width: f64,
+        width: Length,
     ) -> Prop<BorderWidth, Prop<BorderColor, Self, State, Action>, State, Action>
     where
-        Self::Widget: HasProperty<BorderColor> + HasProperty<BorderWidth>,
+        Self::Widget: UsesProperty<BorderColor> + UsesProperty<BorderWidth>,
     {
         self.prop(BorderColor { color }).prop(BorderWidth { width })
     }
@@ -177,31 +101,15 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// Sets the element's border color.
     fn border_color(self, color: Color) -> Prop<BorderColor, Self, State, Action>
     where
-        Self::Widget: HasProperty<BorderColor>,
+        Self::Widget: UsesProperty<BorderColor>,
     {
         self.prop(BorderColor { color })
     }
 
-    /// Sets the element's border color when hovered.
-    fn hovered_border_color(self, color: Color) -> Prop<HoveredBorderColor, Self, State, Action>
-    where
-        Self::Widget: HasProperty<HoveredBorderColor>,
-    {
-        self.prop(HoveredBorderColor(BorderColor { color }))
-    }
-
-    /// Sets the element's border color when focused.
-    fn focused_border_color(self, color: Color) -> Prop<FocusedBorderColor, Self, State, Action>
-    where
-        Self::Widget: HasProperty<FocusedBorderColor>,
-    {
-        self.prop(FocusedBorderColor(BorderColor { color }))
-    }
-
     /// Sets the element's border width.
-    fn border_width(self, width: f64) -> Prop<BorderWidth, Self, State, Action>
+    fn border_width(self, width: Length) -> Prop<BorderWidth, Self, State, Action>
     where
-        Self::Widget: HasProperty<BorderWidth>,
+        Self::Widget: UsesProperty<BorderWidth>,
     {
         self.prop(BorderWidth { width })
     }
@@ -209,15 +117,15 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// Sets the element's box shadow.
     fn box_shadow(self, box_shadow: BoxShadow) -> Prop<BoxShadow, Self, State, Action>
     where
-        Self::Widget: HasProperty<BoxShadow>,
+        Self::Widget: UsesProperty<BoxShadow>,
     {
         self.prop(box_shadow)
     }
 
     /// Sets the element's corner radius.
-    fn corner_radius(self, radius: f64) -> Prop<CornerRadius, Self, State, Action>
+    fn corner_radius(self, radius: Length) -> Prop<CornerRadius, Self, State, Action>
     where
-        Self::Widget: HasProperty<CornerRadius>,
+        Self::Widget: UsesProperty<CornerRadius>,
     {
         self.prop(CornerRadius { radius })
     }
@@ -225,7 +133,7 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// Sets the element's padding.
     fn padding(self, padding: impl Into<Padding>) -> Prop<Padding, Self, State, Action>
     where
-        Self::Widget: HasProperty<Padding>,
+        Self::Widget: UsesProperty<Padding>,
     {
         self.prop(padding.into())
     }
@@ -233,7 +141,7 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
     /// Sets the gap between the element's consecutive children.
     fn gap(self, gap: impl Into<Gap>) -> Prop<Gap, Self, State, Action>
     where
-        Self::Widget: HasProperty<Gap>,
+        Self::Widget: UsesProperty<Gap>,
     {
         self.prop(gap.into())
     }
@@ -244,7 +152,7 @@ pub trait Style<State: 'static, Action: 'static>: WidgetView<State, Action> + Si
         line_break_mode: LineBreaking,
     ) -> Prop<LineBreaking, Self, State, Action>
     where
-        Self::Widget: HasProperty<LineBreaking>,
+        Self::Widget: UsesProperty<LineBreaking>,
     {
         self.prop(line_break_mode)
     }

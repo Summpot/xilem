@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use masonry::app::RenderRoot;
-use masonry::core::{NewWidget, StyleProperty, Widget, WidgetId, WidgetTag};
+use masonry::core::{ErasedAction, Handled, NewWidget, StyleProperty, Widget, WidgetId, WidgetTag};
 use masonry::properties::types::CrossAxisAlignment;
-use masonry::widgets::{Checkbox, Flex, Label, ProgressBar, Slider};
+use masonry::widgets::{Checkbox, CheckboxToggled, Flex, Label, ProgressBar, Slider};
 
 use crate::demo::{CONTENT_GAP, DemoPage, ShellTags, wrap_in_shell};
 
@@ -69,23 +69,18 @@ impl DemoPage for ProgressDemo {
     }
 
     fn build(&self) -> NewWidget<dyn Widget> {
-        let slider = NewWidget::new_with_tag(
-            Slider::new(0.0, 1.0, self.value).with_step(0.01),
-            self.slider,
-        );
+        let slider =
+            NewWidget::new(Slider::new(0.0, 1.0, self.value).with_step(0.01)).with_tag(self.slider);
         let indeterminate =
-            NewWidget::new_with_tag(Checkbox::new(false, "Indeterminate"), self.indeterminate);
+            NewWidget::new(Checkbox::new(false, "Indeterminate")).with_tag(self.indeterminate);
 
         let body = Flex::column()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_fixed(NewWidget::new_with_tag(
-                ProgressBar::new(Some(self.value)),
-                self.bar,
-            ))
-            .with_fixed(NewWidget::new_with_tag(
-                Label::new("Value: 35%").with_style(StyleProperty::FontSize(13.0)),
-                self.value_label,
-            ))
+            .with_fixed(NewWidget::new(ProgressBar::new(Some(self.value))).with_tag(self.bar))
+            .with_fixed(
+                NewWidget::new(Label::new("Value: 35%").with_style(StyleProperty::FontSize(13.0)))
+                    .with_tag(self.value_label),
+            )
             .with_fixed_spacer(CONTENT_GAP)
             .with_fixed(slider)
             .with_fixed_spacer(CONTENT_GAP)
@@ -98,36 +93,35 @@ impl DemoPage for ProgressDemo {
         self.apply(render_root);
     }
 
-    fn on_checkbox_toggled(
+    fn on_action(
         &mut self,
         render_root: &mut RenderRoot,
+        action: &ErasedAction,
         widget_id: WidgetId,
-        toggled: bool,
-    ) -> bool {
-        let id = render_root
-            .get_widget_with_tag(self.indeterminate)
-            .unwrap()
-            .id();
-        if widget_id != id {
-            return false;
+    ) -> Handled {
+        if let Some(toggled) = action.downcast_ref::<CheckboxToggled>() {
+            let id = render_root
+                .get_widget_with_tag(self.indeterminate)
+                .unwrap()
+                .id();
+            if widget_id != id {
+                return Handled::No;
+            }
+            self.is_indeterminate = toggled.0;
+            self.apply(render_root);
+            return Handled::Yes;
         }
-        self.is_indeterminate = toggled;
-        self.apply(render_root);
-        true
-    }
 
-    fn on_slider_value(
-        &mut self,
-        render_root: &mut RenderRoot,
-        widget_id: WidgetId,
-        value: f64,
-    ) -> bool {
-        let id = render_root.get_widget_with_tag(self.slider).unwrap().id();
-        if widget_id != id {
-            return false;
+        if let Some(&value) = action.downcast_ref::<f64>() {
+            let id = render_root.get_widget_with_tag(self.slider).unwrap().id();
+            if widget_id != id {
+                return Handled::No;
+            }
+            self.value = value.clamp(0.0, 1.0);
+            self.apply(render_root);
+            return Handled::Yes;
         }
-        self.value = value.clamp(0.0, 1.0);
-        self.apply(render_root);
-        true
+
+        Handled::No
     }
 }

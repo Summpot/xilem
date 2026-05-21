@@ -5,21 +5,18 @@ use std::any::TypeId;
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::TextAlign;
 use crate::core::{
-    AccessCtx, ArcStr, ChildrenIds, EventCtx, HasProperty, LayoutCtx, MeasureCtx, NewWidget,
-    NoAction, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PrePaintProps,
-    PropertiesMut, PropertiesRef, RegisterCtx, Update, UpdateCtx, Widget, WidgetId, WidgetMut,
+    AccessCtx, ArcStr, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx,
+    PointerButton, PointerButtonEvent, PointerEvent, PrePaintProps, PropertiesMut, PropertiesRef,
+    RegisterCtx, TextEvent, Update, UpdateCtx, UsesProperty, Widget, WidgetId, WidgetMut,
     WidgetPod, paint_background, paint_border, paint_box_shadow,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::{LayoutSize, LenReq};
-use crate::properties::{
-    CaretColor, ContentColor, FocusedBorderColor, LineBreaking, PlaceholderColor, SelectionColor,
-    UnfocusedSelectionColor,
-};
+use crate::layout::{LayoutSize, LenReq, Length};
+use crate::properties::{CaretColor, ContentColor, LineBreaking, PlaceholderColor, SelectionColor};
 use crate::widgets::{Label, TextArea};
 
 /// The text input widget displays text which can be edited by the user,
@@ -34,6 +31,12 @@ use crate::widgets::{Label, TextArea};
 ///
 /// At runtime, most properties of the text will be set using [`text_mut`](Self::text_mut).
 /// This is because `TextInput` largely serves as a wrapper around a [`TextArea`].
+///
+/// # Classes
+///
+/// When the window is not focused, this widget will have the `#unfocused` [class].
+///
+/// [class]: masonry_core::doc::masonry_concepts#classes
 pub struct TextInput {
     text: WidgetPod<TextArea<true>>,
 
@@ -55,14 +58,17 @@ impl TextInput {
     ///
     /// To use non-default text properties, use [`from_text_area`](Self::from_text_area) instead.
     pub fn new(text: &str) -> Self {
-        Self::from_text_area(TextArea::new_editable(text).with_auto_id())
+        Self::from_text_area(TextArea::new_editable(text).prepare())
     }
 
     /// Creates a new `TextInput` from a styled text area.
     pub fn from_text_area(text: NewWidget<TextArea<true>>) -> Self {
         Self {
             text: text.to_pod(),
-            placeholder: Label::new("").with_props(LineBreaking::Clip).to_pod(),
+            placeholder: Label::new("")
+                .prepare()
+                .with_props(LineBreaking::Clip)
+                .to_pod(),
             placeholder_text: "".into(),
             text_alignment: TextAlign::default(),
             clip: false,
@@ -81,7 +87,7 @@ impl TextInput {
     pub fn with_placeholder(mut self, placeholder_text: impl Into<ArcStr>) -> Self {
         let placeholder_text = placeholder_text.into();
         let label = Label::new(placeholder_text.clone()).with_text_alignment(self.text_alignment);
-        self.placeholder = label.with_props(LineBreaking::Clip).to_pod();
+        self.placeholder = label.prepare().with_props(LineBreaking::Clip).to_pod();
         self.placeholder_text = placeholder_text;
         self
     }
@@ -148,10 +154,9 @@ impl TextInput {
     }
 }
 
-impl HasProperty<CaretColor> for TextInput {}
-impl HasProperty<PlaceholderColor> for TextInput {}
-impl HasProperty<SelectionColor> for TextInput {}
-impl HasProperty<UnfocusedSelectionColor> for TextInput {}
+impl UsesProperty<CaretColor> for TextInput {}
+impl UsesProperty<PlaceholderColor> for TextInput {}
+impl UsesProperty<SelectionColor> for TextInput {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for TextInput {
@@ -176,6 +181,24 @@ impl Widget for TextInput {
         }
     }
 
+    fn on_text_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _props: &mut PropertiesMut<'_>,
+        event: &TextEvent,
+    ) {
+        match event {
+            TextEvent::WindowFocusChange(focused) => {
+                if *focused {
+                    ctx.remove_class("#unfocused");
+                } else {
+                    ctx.add_class("#unfocused");
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         ctx.register_child(&mut self.text);
         ctx.register_child(&mut self.placeholder);
@@ -194,13 +217,6 @@ impl Widget for TextInput {
             ctx.mutate_self_later(|mut input| {
                 let mut input = input.downcast::<Self>();
                 let color = *input.get_prop::<SelectionColor>();
-                let mut text_area = Self::text_mut(&mut input);
-                text_area.insert_prop(color);
-            });
-        } else if property_type == TypeId::of::<UnfocusedSelectionColor>() {
-            ctx.mutate_self_later(|mut input| {
-                let mut input = input.downcast::<Self>();
-                let color = *input.get_prop::<UnfocusedSelectionColor>();
                 let mut text_area = Self::text_mut(&mut input);
                 text_area.insert_prop(color);
             });
@@ -232,12 +248,6 @@ impl Widget for TextInput {
                 });
                 ctx.mutate_self_later(|mut input| {
                     let mut input = input.downcast::<Self>();
-                    let color = *input.get_prop::<UnfocusedSelectionColor>();
-                    let mut text_area = Self::text_mut(&mut input);
-                    text_area.insert_prop(color);
-                });
-                ctx.mutate_self_later(|mut input| {
-                    let mut input = input.downcast::<Self>();
                     let color = input.get_prop::<PlaceholderColor>().color;
                     let mut label = Self::placeholder_mut(&mut input);
                     label.insert_prop(ContentColor::new(color));
@@ -258,8 +268,8 @@ impl Widget for TextInput {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         match len_req {
             LenReq::MaxContent | LenReq::MinContent => {
                 let auto_length = len_req.into();
@@ -301,23 +311,34 @@ impl Widget for TextInput {
         }
     }
 
-    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn pre_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let bbox = ctx.border_box();
-        let mut p = PrePaintProps::fetch(ctx, props);
+        let cache = ctx.property_cache();
+        let p = PrePaintProps::fetch(props, cache);
 
-        // We want to show a focus border if our child TextArea is focused
-        if ctx.has_focus_target()
-            && let Some(fb) = props.get_defined::<FocusedBorderColor>()
-        {
-            p.border_color = &fb.0;
-        }
-
-        paint_box_shadow(scene, bbox, p.box_shadow, p.corner_radius);
-        paint_background(scene, bbox, p.background, p.border_width, p.corner_radius);
-        paint_border(scene, bbox, p.border_color, p.border_width, p.corner_radius);
+        paint_box_shadow(painter, bbox, p.box_shadow, p.corner_radius);
+        paint_background(painter, bbox, p.background, p.border_width, p.corner_radius);
+        paint_border(
+            painter,
+            bbox,
+            p.border_color,
+            p.border_width,
+            p.corner_radius,
+        );
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -353,14 +374,14 @@ mod tests {
 
     use super::*;
     use crate::core::{StyleProperty, TextEvent};
-    use crate::kurbo::Size;
+    use crate::dpi::PhysicalSize;
     use crate::testing::{TestHarness, assert_render_snapshot};
     use crate::theme::test_property_set;
     use crate::widgets::TextArea;
 
     const HARNESS_PARAMS: TestHarnessParams = {
         let mut params = TestHarnessParams::DEFAULT;
-        params.window_size = Size::new(150.0, 40.0);
+        params.window_size = PhysicalSize::new(150, 40);
         params.root_padding = 15;
         params
     };
@@ -370,7 +391,7 @@ mod tests {
         let text_input = NewWidget::new(TextInput::from_text_area(
             TextArea::new_editable("TextInput contents")
                 .with_style(StyleProperty::FontSize(14.0))
-                .with_auto_id(),
+                .prepare(),
         ));
         let mut harness = TestHarness::create_with(test_property_set(), text_input, HARNESS_PARAMS);
 
@@ -403,7 +424,7 @@ mod tests {
             TextInput::from_text_area(
                 TextArea::new_editable("")
                     .with_style(StyleProperty::FontSize(14.0))
-                    .with_auto_id(),
+                    .prepare(),
             )
             .with_placeholder("HELLO WORLD"),
         );
@@ -420,7 +441,7 @@ mod tests {
                 TextArea::new_editable("TextInput contents which should be clipped")
                     .with_style(StyleProperty::FontSize(14.0))
                     .with_word_wrap(false)
-                    .with_auto_id(),
+                    .prepare(),
             )
             .with_clip(true),
         );

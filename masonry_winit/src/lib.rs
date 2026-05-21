@@ -84,7 +84,9 @@
 #![cfg_attr(target_pointer_width = "64", warn(clippy::trivially_copy_pass_by_ref))]
 // END LINEBENDER LINT SET
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![expect(missing_debug_implementations, reason = "Deferred: Noisy")]
+
+#[cfg(feature = "tracy")]
+use vello as _;
 
 mod app_driver;
 mod convert_winit_event;

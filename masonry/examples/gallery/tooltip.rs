@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use masonry::app::RenderRoot;
-use masonry::core::{NewWidget, StyleProperty, Widget, WidgetId, WidgetTag};
+use masonry::core::{ErasedAction, Handled, NewWidget, StyleProperty, Widget, WidgetId, WidgetTag};
+use masonry::kurbo::Point;
 use masonry::layers::Tooltip;
 use masonry::properties::types::CrossAxisAlignment;
-use masonry::vello::kurbo::Point;
-use masonry::widgets::{Button, Flex, Label};
+use masonry::widgets::{Button, ButtonPress, Flex, Label};
 
 use crate::demo::{CONTENT_GAP, DemoPage, ShellTags, wrap_in_shell};
 
@@ -34,14 +34,14 @@ impl DemoPage for TooltipDemo {
     }
 
     fn build(&self) -> NewWidget<dyn Widget> {
-        let show = NewWidget::new_with_tag(Button::with_text("Show tooltip"), self.show_btn);
+        let show = NewWidget::new(Button::with_text("Show tooltip")).with_tag(self.show_btn);
 
         let body = Flex::column()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_fixed(
                 Label::new("Click the button to create a tooltip layer.")
                     .with_style(StyleProperty::FontSize(14.0))
-                    .with_auto_id(),
+                    .prepare(),
             )
             .with_fixed_spacer(CONTENT_GAP)
             .with_fixed(show);
@@ -49,18 +49,27 @@ impl DemoPage for TooltipDemo {
         wrap_in_shell(self.shell, NewWidget::new(body).erased())
     }
 
-    fn on_button_press(&mut self, render_root: &mut RenderRoot, widget_id: WidgetId) -> bool {
+    fn on_action(
+        &mut self,
+        render_root: &mut RenderRoot,
+        action: &ErasedAction,
+        widget_id: WidgetId,
+    ) -> Handled {
+        if !action.is::<ButtonPress>() {
+            return Handled::No;
+        }
+
         let id = render_root.get_widget_with_tag(self.show_btn).unwrap().id();
         if widget_id != id {
-            return false;
+            return Handled::No;
         }
 
         let tooltip = NewWidget::new(Tooltip::new(
             Label::new("Hello from a tooltip layer!")
                 .with_style(StyleProperty::FontSize(14.0))
-                .with_auto_id(),
+                .prepare(),
         ));
         render_root.add_layer(tooltip.erased(), Point::new(320.0, 120.0));
-        true
+        Handled::Yes
     }
 }

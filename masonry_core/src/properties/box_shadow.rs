@@ -1,11 +1,10 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use vello::Scene;
-
-use crate::core::{HasProperty, Property, Widget};
+use crate::core::{Property, UsesProperty, Widget};
+use crate::imaging::{BlurredRoundedRect, Composite, Painter};
 use crate::kurbo::{Affine, BezPath, Insets, Point, RoundedRect, Shape as _};
-use crate::peniko::Fill;
+use crate::layout::Length;
 use crate::peniko::color::{AlphaColor, Srgb};
 
 // TODO - This is a first implementation of box shadows. A full version would need
@@ -17,7 +16,7 @@ use crate::peniko::color::{AlphaColor, Srgb};
 // - Corner radius: Right now take our widget's corner radii, and average them to draw a shadow with a single corner radius. Ideally we'd like to match individual values.
 
 // Every widget has a box shadow.
-impl<W: Widget> HasProperty<BoxShadow> for W {}
+impl<W: Widget> UsesProperty<BoxShadow> for W {}
 
 /// The drop shadow of a widget.
 ///
@@ -32,9 +31,8 @@ pub struct BoxShadow {
 
     /// The distance between the shadow's "inner edge" and the closest fully-transparent point.
     ///
-    /// A value of zero means the shadow's edge will be shard.
-    /// Negative values will be treated as zero.
-    pub blur_radius: f64,
+    /// A value of zero means the shadow's edge will be sharp.
+    pub blur_radius: Length,
 }
 
 impl Property for BoxShadow {
@@ -42,7 +40,7 @@ impl Property for BoxShadow {
         static DEFAULT: BoxShadow = BoxShadow {
             color: AlphaColor::TRANSPARENT,
             offset: Point::ZERO,
-            blur_radius: 0.,
+            blur_radius: Length::ZERO,
         };
         &DEFAULT
     }
@@ -60,12 +58,12 @@ impl BoxShadow {
         Self {
             color,
             offset: offset.into(),
-            blur_radius: 0.,
+            blur_radius: Length::ZERO,
         }
     }
 
     /// Builder method to change the shadow's blur radius.
-    pub const fn blur(self, blur_radius: f64) -> Self {
+    pub const fn blur(self, blur_radius: Length) -> Self {
         Self {
             blur_radius,
             ..self
@@ -80,14 +78,14 @@ impl BoxShadow {
         alpha != 0.0
     }
 
-    /// Helper function to paint the shadow into a scene.
-    pub fn paint(&self, scene: &mut Scene, transform: Affine, rect: RoundedRect) {
+    /// Helper function to paint the shadow through imaging's [`Painter`].
+    pub fn paint(&self, painter: &mut Painter<'_>, transform: Affine, rect: RoundedRect) {
         if !self.is_visible() {
             return;
         }
 
         let transform = transform.pre_translate(self.offset.to_vec2());
-        let blur_radius = self.blur_radius.max(0.);
+        let blur_radius = self.blur_radius.get();
 
         let radius = (rect.radii().bottom_left
             + rect.radii().bottom_right
@@ -106,23 +104,23 @@ impl BoxShadow {
                 .chain(carve_out_rect.to_path(0.1).reverse_subpaths()),
         );
 
-        scene.push_clip_layer(Fill::NonZero, transform, &clip_shape);
-        scene.draw_blurred_rounded_rect_in(
-            &big_rect,
-            transform,
-            rect.rect(),
-            self.color,
-            radius,
-            blur_radius,
-        );
-        scene.pop_layer();
+        painter.with_fill_clip_transformed(clip_shape, transform, |painter| {
+            painter.blurred_rounded_rect(BlurredRoundedRect {
+                transform,
+                rect: rect.rect(),
+                color: self.color,
+                radius,
+                std_dev: blur_radius,
+                composite: Composite::default(),
+            });
+        });
     }
 
     /// Helper function that returns how much a given shadow expands the paint rect.
     ///
     /// The returned [`Insets`] are guaranteed to be non-negative.
     pub fn get_insets(&self) -> Insets {
-        let blur_radius = self.blur_radius.max(0.);
+        let blur_radius = self.blur_radius.get();
         Insets {
             x0: (blur_radius - self.offset.x).max(0.),
             y0: (blur_radius - self.offset.y).max(0.),

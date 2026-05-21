@@ -7,20 +7,18 @@ use std::fmt::Debug;
 use accesskit::{Action, Node, Role};
 use masonry_core::anymore::AnyDebug;
 use masonry_core::debug_panic;
-use vello::Scene;
 
 use crate::core::keyboard::{Code, Key, NamedKey};
 use crate::core::{
     AccessCtx, AccessEvent, ChildrenIds, CursorIcon, EventCtx, LayoutCtx, MeasureCtx, PaintCtx,
-    PointerButton, PointerEvent, PropertiesMut, PropertiesRef, Property, PropertySet, QueryCtx,
-    RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut, WidgetPod,
+    PointerButton, PointerEvent, PropertiesMut, PropertiesRef, Property, QueryCtx, RegisterCtx,
+    TextEvent, Update, UpdateCtx, Widget, WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, BezPath, Cap, Line, Point, Size, Stroke};
-use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
-use crate::peniko::{Fill, Gradient};
-use crate::properties::{
-    BackwardColor, ContentColor, DisabledContentColor, ForwardColor, HeatColor, StepInputStyle,
-};
+use crate::layout::{AsUnit, LayoutSize, LenReq, Length, SizeDef};
+use crate::peniko::Gradient;
+use crate::properties::{BackwardColor, ContentColor, ForwardColor, HeatColor, StepInputStyle};
 use crate::theme;
 use crate::widgets::Label;
 
@@ -1057,22 +1055,18 @@ impl<T: Steppable> Widget for StepInput<T> {
                         }
                     }
                     _ => match ke.code {
-                        Code::NumpadSubtract => {
-                            if ke.state.is_down() {
-                                value_changed = if snap {
-                                    self.prev_snap()
-                                } else {
-                                    self.prev_step()
-                                }
+                        Code::NumpadSubtract if ke.state.is_down() => {
+                            value_changed = if snap {
+                                self.prev_snap()
+                            } else {
+                                self.prev_step()
                             }
                         }
-                        Code::NumpadAdd => {
-                            if ke.state.is_down() {
-                                value_changed = if snap {
-                                    self.next_snap()
-                                } else {
-                                    self.next_step()
-                                }
+                        Code::NumpadAdd if ke.state.is_down() => {
+                            value_changed = if snap {
+                                self.next_snap()
+                            } else {
+                                self.next_step()
                             }
                         }
                         _ => (),
@@ -1266,7 +1260,6 @@ impl<T: Steppable> Widget for StepInput<T> {
         if StepInputStyle::matches(property_type) {
             ctx.request_layout();
         } else if ContentColor::matches(property_type)
-            || DisabledContentColor::matches(property_type)
             || BackwardColor::matches(property_type)
             || ForwardColor::matches(property_type)
             || HeatColor::matches(property_type)
@@ -1285,36 +1278,22 @@ impl<T: Steppable> Widget for StepInput<T> {
                 let mut label = this.ctx.get_mut(label);
                 label.insert_prop(prop);
             });
-        } else if DisabledContentColor::matches(property_type) {
-            ctx.mutate_self_later(|mut this| {
-                let mut this = this.downcast::<Self>();
-                let prop = this.get_prop_defined::<DisabledContentColor>().copied();
-                let Some(label) = this.widget.label.as_mut() else {
-                    return;
-                };
-                let mut label = this.ctx.get_mut(label);
-                if let Some(prop) = prop {
-                    label.insert_prop(prop);
-                } else {
-                    label.remove_prop::<DisabledContentColor>();
-                }
-            });
         }
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, props: &mut PropertiesMut<'_>, event: &Update) {
         match event {
             Update::WidgetAdded => {
-                let color = props.get::<ContentColor>();
-                let color_disabled = props.get_defined::<DisabledContentColor>();
-
-                let mut props = PropertySet::one(*color);
-                if let Some(color_disabled) = color_disabled {
-                    props = props.with(*color_disabled);
-                }
+                let cache = ctx.property_cache();
+                let color = props.get::<ContentColor>(cache);
 
                 let display_value = self.display_value(self.value);
-                self.label = Some(Label::new(display_value).with_props(props).to_pod());
+                self.label = Some(
+                    Label::new(display_value)
+                        .prepare()
+                        .with_props(*color)
+                        .to_pod(),
+                );
                 ctx.children_changed();
             }
             Update::ActiveChanged(active) => {
@@ -1337,18 +1316,15 @@ impl<T: Steppable> Widget for StepInput<T> {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        cross_length: Option<Length>,
+    ) -> Length {
+        let content_height = theme::BASIC_WIDGET_HEIGHT;
 
-        let content_height = theme::BASIC_WIDGET_HEIGHT.dp(scale);
-
-        let style = props.get::<StepInputStyle>();
+        let cache = ctx.property_cache();
+        let style = props.get::<StepInputStyle>(cache);
 
         let (len_req, min_result) = match len_req {
-            LenReq::MinContent | LenReq::MaxContent => (len_req, 0.),
+            LenReq::MinContent | LenReq::MaxContent => (len_req, Length::ZERO),
             // We always want to use up all offered space but may need even more,
             // so we implement FitContent as space.max(MinContent).
             LenReq::FitContent(space) => (LenReq::MinContent, space),
@@ -1359,7 +1335,7 @@ impl<T: Steppable> Widget for StepInput<T> {
                 StepInputStyle::Basic => {
                     let vertical_space = cross_length.unwrap_or(content_height);
                     let (btn_length, btn_edge_pad) =
-                        Self::basic_button_length(vertical_space, None);
+                        Self::basic_button_length(vertical_space.get(), None);
                     match len_req {
                         LenReq::MinContent => 2. * (btn_length + 2. * btn_edge_pad),
                         LenReq::MaxContent => 2. * (btn_length * 3.),
@@ -1369,14 +1345,15 @@ impl<T: Steppable> Widget for StepInput<T> {
                 StepInputStyle::Flow => {
                     let vertical_space = cross_length.unwrap_or(content_height);
                     let (arrow_width, _, arrow_edge_pad) =
-                        Self::flow_button_length(vertical_space, None);
+                        Self::flow_button_length(vertical_space.get(), None);
                     match len_req {
                         LenReq::MinContent => 2. * (2. * arrow_width + arrow_edge_pad),
                         LenReq::MaxContent => 2. * (4. * arrow_width + arrow_edge_pad),
                         LenReq::FitContent(_) => unreachable!(),
                     }
                 }
-            },
+            }
+            .px(),
             Axis::Vertical => content_height,
         };
 
@@ -1389,19 +1366,18 @@ impl<T: Steppable> Widget for StepInput<T> {
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
         let cross = axis.cross();
         let label_cross_length = match cross {
-            Axis::Horizontal => {
-                cross_length.map(|cross_length| (cross_length - calc_button_length(cross)).max(0.))
-            }
+            Axis::Horizontal => cross_length
+                .map(|cross_length| cross_length.saturating_sub(calc_button_length(cross))),
             Axis::Vertical => cross_length,
         };
         let label_length = if let Some(label) = self.label.as_mut() {
             ctx.compute_length(label, auto_length, context_size, axis, label_cross_length)
         } else {
-            0.
+            Length::ZERO
         };
 
         let length = match axis {
-            Axis::Horizontal => label_length + button_length,
+            Axis::Horizontal => label_length.saturating_add(button_length),
             Axis::Vertical => label_length.max(button_length),
         };
 
@@ -1414,7 +1390,8 @@ impl<T: Steppable> Widget for StepInput<T> {
             return;
         };
 
-        let style = props.get::<StepInputStyle>();
+        let cache = ctx.property_cache();
+        let style = props.get::<StepInputStyle>(cache);
 
         // Reserve MinContent worth of button space
         let buttons_width = match style {
@@ -1447,10 +1424,16 @@ impl<T: Steppable> Widget for StepInput<T> {
         ctx.derive_baselines(label);
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        match props.get::<StepInputStyle>() {
-            StepInputStyle::Basic => Self::paint_basic(self, ctx, props, scene),
-            StepInputStyle::Flow => Self::paint_flow(self, ctx, props, scene),
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let cache = ctx.property_cache();
+        match props.get::<StepInputStyle>(cache) {
+            StepInputStyle::Basic => Self::paint_basic(self, ctx, props, painter),
+            StepInputStyle::Flow => Self::paint_flow(self, ctx, props, painter),
         }
     }
 
@@ -1537,25 +1520,16 @@ impl<T: Steppable> StepInput<T> {
     }
 
     // Paint controls in the basic style.
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "Widget::paint gets props by ref"
-    )]
     fn paint_basic(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         props: &PropertiesRef<'_>,
-        scene: &mut Scene,
+        painter: &mut Painter<'_>,
     ) {
-        let color_content = if ctx.is_disabled()
-            && let Some(dc) = props.get_defined::<DisabledContentColor>()
-        {
-            &dc.0
-        } else {
-            props.get::<ContentColor>()
-        };
-        let color_backward = props.get::<BackwardColor>();
-        let color_forward = props.get::<ForwardColor>();
+        let cache = ctx.property_cache();
+        let color_content = *props.get::<ContentColor>(cache);
+        let color_backward = *props.get::<BackwardColor>(cache);
+        let color_forward = *props.get::<ForwardColor>(cache);
 
         let size = ctx.content_box_size();
         let (_, forward, backward) = self.visual_speed();
@@ -1612,27 +1586,23 @@ impl<T: Steppable> StepInput<T> {
             end_cap: Cap::Butt,
             ..Default::default()
         };
-        scene.stroke(&style, Affine::IDENTITY, minus_color, None, &minus);
-        scene.stroke(&style, Affine::IDENTITY, plus_color, None, &plus_h);
-        scene.stroke(&style, Affine::IDENTITY, plus_color, None, &plus_v);
+        painter.stroke(minus, &style, *minus_color).draw();
+        painter.stroke(plus_h, &style, *plus_color).draw();
+        painter.stroke(plus_v, &style, *plus_color).draw();
     }
 
     // Paint controls in the flow style.
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "Widget::paint gets props by ref"
-    )]
-    fn paint_flow(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        let color_content = if ctx.is_disabled()
-            && let Some(dc) = props.get_defined::<DisabledContentColor>()
-        {
-            &dc.0
-        } else {
-            props.get::<ContentColor>()
-        };
-        let color_backward = props.get::<BackwardColor>();
-        let color_forward = props.get::<ForwardColor>();
-        let color_heat = props.get::<HeatColor>();
+    fn paint_flow(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let cache = ctx.property_cache();
+        let color_content = *props.get::<ContentColor>(cache);
+        let color_backward = *props.get::<BackwardColor>(cache);
+        let color_forward = *props.get::<ForwardColor>(cache);
+        let color_heat = *props.get::<HeatColor>(cache);
 
         let size = ctx.content_box_size();
         let (speed, forward, backward) = self.visual_speed();
@@ -1720,7 +1690,7 @@ impl<T: Steppable> StepInput<T> {
             let style1_x_end = size.width - arrow_offset_active + arrow_width * 0.11;
             // Keep the outer line length at 80% of the inner lines.
             let style1_x_start = self.label_x_end + (style1_x_end - self.label_x_end) * 0.2;
-            // Keep the outer line just barely following the the arrow at the outer edge.
+            // Keep the outer line just barely following the arrow at the outer edge.
             let style1_y_offset = style1.width * 0.5 + arrow_height * 0.05;
 
             // End the inner lines underneath the arrow base.
@@ -1788,7 +1758,6 @@ impl<T: Steppable> StepInput<T> {
                     (1., color_backward.0.with_alpha(style2_gradient_max)),
                 ])
             };
-
             // The backwards lines need to be reflected and shifted to the other side.
             let lines_affine = if backward {
                 Affine::reflect((0., 0.), (0., 1.))
@@ -1798,17 +1767,32 @@ impl<T: Steppable> StepInput<T> {
             };
 
             // Actually paint the lines.
-            scene.stroke(&style1, lines_affine, &style1_gradient, None, &line1);
-            scene.stroke(&style2, lines_affine, &style2_gradient, None, &line2);
-            scene.stroke(&style2, lines_affine, &style2_gradient, None, &line3);
-            scene.stroke(&style1, lines_affine, &style1_gradient, None, &line4);
+            painter
+                .stroke(line1, &style1, &style1_gradient)
+                .transform(lines_affine)
+                .draw();
+            painter
+                .stroke(line2, &style2, &style2_gradient)
+                .transform(lines_affine)
+                .draw();
+            painter
+                .stroke(line3, &style2, &style2_gradient)
+                .transform(lines_affine)
+                .draw();
+            painter
+                .stroke(line4, &style1, &style1_gradient)
+                .transform(lines_affine)
+                .draw();
         }
 
         // Paint the backward facing arrow
         if backward {
             // With a gradient if a slide is in progress
             let gradient = gradient.as_ref().unwrap();
-            scene.fill(Fill::NonZero, arrow_affine_backward, gradient, None, &arrow);
+            painter
+                .fill(&arrow, gradient)
+                .transform(arrow_affine_backward)
+                .draw();
         } else {
             // Otherwise with a solid color, potentially showing hover status if not sliding.
             let color = if !sliding && self.hover_backward && ctx.is_hovered() {
@@ -1816,14 +1800,20 @@ impl<T: Steppable> StepInput<T> {
             } else {
                 &color_content.color
             };
-            scene.fill(Fill::NonZero, arrow_affine_backward, color, None, &arrow);
+            painter
+                .fill(&arrow, *color)
+                .transform(arrow_affine_backward)
+                .draw();
         }
 
         // Paint the forward facing arrow
         if forward {
             // With a gradient if a slide is in progress
             let gradient = gradient.as_ref().unwrap();
-            scene.fill(Fill::NonZero, arrow_affine_forward, gradient, None, &arrow);
+            painter
+                .fill(&arrow, gradient)
+                .transform(arrow_affine_forward)
+                .draw();
         } else {
             // Otherwise with a solid color, potentially showing hover status if not sliding.
             let color = if !sliding && !self.hover_backward && ctx.is_hovered() {
@@ -1831,7 +1821,10 @@ impl<T: Steppable> StepInput<T> {
             } else {
                 &color_content.color
             };
-            scene.fill(Fill::NonZero, arrow_affine_forward, color, None, &arrow);
+            painter
+                .fill(&arrow, *color)
+                .transform(arrow_affine_forward)
+                .draw();
         }
     }
 }
@@ -1842,7 +1835,7 @@ mod tests {
     use std::fmt::Display;
 
     use super::*;
-    use crate::core::{NewWidget, PropertySet, WidgetOptions, WidgetTag};
+    use crate::core::{NewWidget, PropertySet, WidgetTag};
     use crate::layout::AsUnit;
     use crate::properties::types::CrossAxisAlignment;
     use crate::properties::{Dimensions, Padding};
@@ -2358,7 +2351,11 @@ mod tests {
 
     #[test]
     fn basics() {
-        let si = |base, props| StepInput::new(base, 1, 0, usize::MAX).with_props(props);
+        let si = |base, props| {
+            StepInput::new(base, 1, 0, usize::MAX)
+                .prepare()
+                .with_props(props)
+        };
 
         let root = Flex::column()
             .cross_axis_alignment(CrossAxisAlignment::Start)
@@ -2377,10 +2374,10 @@ mod tests {
                 (StepInputStyle::Basic, Dimensions::width(100.px())),
             ))
             .with_fixed(si(500, (StepInputStyle::Flow, Dimensions::width(100.px()))))
-            .with_props(Padding::all(10.));
+            .prepare()
+            .with_props(Padding::all(10.px()));
 
-        let window_size = Size::new(150.0, 525.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), root, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (150, 525));
 
         assert_render_snapshot!(harness, "step_input_basics");
     }
@@ -2388,12 +2385,9 @@ mod tests {
     #[test]
     fn speed_lines() {
         let si = |tag| {
-            NewWidget::new_with(
-                StepInput::new(5000, 1, 0, usize::MAX),
-                Some(tag),
-                WidgetOptions::default(),
-                (StepInputStyle::Flow, Dimensions::fixed(250.px(), 85.px())),
-            )
+            NewWidget::new(StepInput::new(5000, 1, 0, usize::MAX))
+                .with_tag(tag)
+                .with_props((StepInputStyle::Flow, Dimensions::fixed(250.px(), 85.px())))
         };
 
         let tag_backward = WidgetTag::unique();
@@ -2406,10 +2400,10 @@ mod tests {
             .cross_axis_alignment(CrossAxisAlignment::Start)
             .with_fixed(lines_backward)
             .with_fixed(lines_forward)
-            .with_props(Padding::all(10.));
+            .prepare()
+            .with_props(Padding::all(10.px()));
 
-        let window_size = Size::new(270.0, 200.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), root, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (270, 200));
 
         harness.edit_widget(tag_backward, |mut widget| {
             widget.widget.drag_start = Some(Point::new(10000., 0.));
@@ -2430,11 +2424,15 @@ mod tests {
     fn awkward_layout() {
         let basic = |base, props: PropertySet| {
             let props = props.with(StepInputStyle::Basic);
-            StepInput::new(base, 1, 0, usize::MAX).with_props(props)
+            StepInput::new(base, 1, 0, usize::MAX)
+                .prepare()
+                .with_props(props)
         };
         let flow = |base, props: PropertySet| {
             let props = props.with(StepInputStyle::Flow);
-            StepInput::new(base, 1, 0, usize::MAX).with_props(props)
+            StepInput::new(base, 1, 0, usize::MAX)
+                .prepare()
+                .with_props(props)
         };
 
         let root = Flex::column()
@@ -2457,10 +2455,10 @@ mod tests {
             // Extra high widget to test that controls remain reasonably sized.
             .with_fixed(basic(1234, (Dimensions::fixed(100.px(), 200.px())).into()))
             .with_fixed(flow(1234, (Dimensions::fixed(100.px(), 200.px())).into()))
-            .with_props(Padding::all(10.));
+            .prepare()
+            .with_props(Padding::all(10.px()));
 
-        let window_size = Size::new(320.0, 650.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), root, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (320, 650));
 
         assert_render_snapshot!(harness, "step_input_awkward_layout");
     }

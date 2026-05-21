@@ -4,13 +4,13 @@
 use std::cmp::PartialEq;
 use std::marker::PhantomData;
 
-use masonry::core::{HasProperty, Property};
+use masonry::core::{Property, UsesProperty};
 
 use crate::core::{MessageCtx, Mut, View, ViewMarker};
 use crate::{Pod, ViewCtx, WidgetView};
 
 /// A view that adds a property `P` or overrides a previously defined property `P`
-/// to the element of the child (`V`) [`WidgetView`] when it [supports it](HasProperty).
+/// to the element of the child (`V`) [`WidgetView`] when it [supports it](UsesProperty).
 ///
 /// It can be constructed by using [`WidgetView::prop`].
 /// This view can also be used to create syntax-sugar extension traits with more documentation, as seen in [`Style`](crate::style::Style).
@@ -25,7 +25,7 @@ impl<P, Child, State, Action> View<State, Action, ViewCtx> for Prop<P, Child, St
 where
     P: Property + PartialEq,
     Child: WidgetView<State, Action>,
-    Child::Widget: HasProperty<P>,
+    Child::Widget: UsesProperty<P>,
     State: 'static,
     Action: 'static,
 {
@@ -56,8 +56,12 @@ where
             element.reborrow_mut(),
             app_state,
         );
+        // TODO - This is kind of a hack. We shouldn't allow stacking `Prop` views.
         // If a child view changed the property, we know we're out of date.
-        if self.property != prev.property || element.prop_has_changed::<P>() {
+        let prop_has_changed = ctx.prop_has_changed::<P>(element.id());
+
+        if self.property != prev.property || prop_has_changed {
+            ctx.mark_prop_changed::<P>(element.id());
             element.insert_prop(self.property.clone());
         }
     }

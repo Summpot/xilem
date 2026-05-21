@@ -4,17 +4,17 @@
 use std::cmp::Ordering;
 
 use accesskit::{Node, Role};
-use parley::style::FontWeight;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ArcStr, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx,
     PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty, Update, UpdateCtx, Widget, WidgetId,
     WidgetMut, WidgetPod,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::LenReq;
+use crate::layout::{LenReq, Length};
+use crate::parley::style::FontWeight;
 use crate::widgets::Label;
 
 /// An `f32` value which can move towards a target value at a linear rate over time.
@@ -96,6 +96,16 @@ impl AnimatedF32 {
             AnimationStatus::Ongoing
         }
     }
+
+    /// Returns the target value.        
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+
+    /// Returns the current value.        
+    pub fn value(&self) -> f32 {
+        self.value
+    }
 }
 
 /// The status an animation can be in.
@@ -116,7 +126,7 @@ impl AnimationStatus {
     }
 }
 
-/// A widget displaying non-editable text, with a variable [weight](parley::style::FontWeight).
+/// A widget displaying non-editable text, with a variable [weight](crate::parley::style::FontWeight).
 ///
 /// Ensure that `VariableLabel` has [`Dimensions`] set via props
 /// either to [`Dimensions::fixed`] or [`Dimensions::MAX`].
@@ -231,8 +241,8 @@ impl Widget for VariableLabel {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         _len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         ctx.redirect_measurement(&mut self.label, axis, cross_length)
     }
 
@@ -242,7 +252,13 @@ impl Widget for VariableLabel {
         ctx.derive_baselines(&self.label);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer

@@ -9,10 +9,9 @@ use masonry::core::{
     PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Widget,
     WidgetPod,
 };
-use masonry::kurbo::{Point, Size};
-use masonry::layout::LenReq;
-use vello::Scene;
-use vello::kurbo::Axis;
+use masonry::imaging::Painter;
+use masonry::kurbo::{Axis, Point, Size};
+use masonry::layout::{LenReq, Length};
 
 use crate::core::Mut;
 use crate::core::one_of::OneOf;
@@ -180,15 +179,15 @@ impl crate::core::one_of::PhantomElementCtx for ViewCtx {
     reason = "Implementation detail, public because of trait visibility rules"
 )]
 pub enum OneOfWidget<
-    A: ?Sized,
-    B: ?Sized,
-    C: ?Sized,
-    D: ?Sized,
-    E: ?Sized,
-    F: ?Sized,
-    G: ?Sized,
-    H: ?Sized,
-    I: ?Sized,
+    A: Widget + ?Sized,
+    B: Widget + ?Sized,
+    C: Widget + ?Sized,
+    D: Widget + ?Sized,
+    E: Widget + ?Sized,
+    F: Widget + ?Sized,
+    G: Widget + ?Sized,
+    H: Widget + ?Sized,
+    I: Widget + ?Sized,
 > {
     A(WidgetPod<A>),
     B(WidgetPod<B>),
@@ -257,8 +256,8 @@ impl<
         _props: &PropertiesRef<'_>,
         axis: Axis,
         _len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         match self {
             Self::A(w) => ctx.redirect_measurement(w, axis, cross_length),
             Self::B(w) => ctx.redirect_measurement(w, axis, cross_length),
@@ -313,7 +312,13 @@ impl<
         }
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer

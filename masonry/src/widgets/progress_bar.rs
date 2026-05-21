@@ -6,7 +6,6 @@ use std::any::TypeId;
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
     AccessCtx, ArcStr, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx,
@@ -14,12 +13,12 @@ use crate::core::{
     UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod, paint_background, paint_border,
     paint_box_shadow,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Axis, Size};
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
 use crate::peniko::{Color, Gradient};
 use crate::properties::{BarColor, BorderColor, BorderWidth, CornerRadius, LineBreaking};
 use crate::theme;
-use crate::util::fill;
 use crate::widgets::Label;
 
 // TODO - NaN probably shouldn't be a meaningful value in our API.
@@ -50,8 +49,9 @@ impl ProgressBar {
     pub fn new(progress: Option<f64>) -> Self {
         let progress = clamp_progress(progress);
         let label_props = PropertySet::one(LineBreaking::Overflow);
-        let label =
-            NewWidget::new_with_props(Label::new(Self::value(progress)), label_props).to_pod();
+        let label = NewWidget::new(Label::new(Self::value(progress)))
+            .with_props(label_props)
+            .to_pod();
         Self { progress, label }
     }
 }
@@ -139,14 +139,10 @@ impl Widget for ProgressBar {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         // TODO: Move this to theme?
-        const DEFAULT_WIDTH: f64 = 400.; // In logical pixels
-
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        const DEFAULT_WIDTH: Length = Length::const_px(400.);
 
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
@@ -161,10 +157,10 @@ impl Widget for ProgressBar {
 
         let potential_length = match axis {
             Axis::Horizontal => match len_req {
-                LenReq::MinContent | LenReq::MaxContent => DEFAULT_WIDTH * scale,
+                LenReq::MinContent | LenReq::MaxContent => DEFAULT_WIDTH,
                 LenReq::FitContent(space) => space,
             },
-            Axis::Vertical => theme::BASIC_WIDGET_HEIGHT.dp(scale),
+            Axis::Vertical => theme::BASIC_WIDGET_HEIGHT,
         };
 
         // Make sure we always report a length big enough to fit our painting
@@ -181,27 +177,39 @@ impl Widget for ProgressBar {
         ctx.derive_baselines(&self.label);
     }
 
-    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn pre_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let bbox = ctx.border_box();
-        let p = PrePaintProps::fetch(ctx, props);
+        let cache = ctx.property_cache();
+        let p = PrePaintProps::fetch(props, cache);
 
-        paint_box_shadow(scene, bbox, p.box_shadow, p.corner_radius);
-        paint_background(scene, bbox, p.background, p.border_width, p.corner_radius);
+        paint_box_shadow(painter, bbox, p.box_shadow, p.corner_radius);
+        paint_background(painter, bbox, p.background, p.border_width, p.corner_radius);
         // We need to delay painting the border until after we paint the filled bar area.
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         let border_box = ctx.border_box();
-        let border_width = props.get::<BorderWidth>();
-        let corner_radius = props.get::<CornerRadius>();
-        let border_color = props.get::<BorderColor>();
+        let cache = ctx.property_cache();
+        let border_width = *props.get::<BorderWidth>(cache);
+        let corner_radius = *props.get::<CornerRadius>(cache);
+        let border_color = *props.get::<BorderColor>(cache);
 
         let progress = self.progress.unwrap_or(1.);
         if progress > 0. {
             // The bar width is without the borders.
-            let bar_width = border_box.width() - 2. * border_width.width;
+            let bar_width = border_box.width() - 2. * border_width.width.get();
             if bar_width > 0. {
-                let bar_color = props.get::<BarColor>().0;
+                let bar_color = props.get::<BarColor>(cache).0;
                 // Paint with a gradient so we get a straight line slice of the rounded rect.
                 let gradient = Gradient::new_linear((0., 0.), (bar_width, 0.)).with_stops([
                     (0., bar_color),
@@ -213,13 +221,19 @@ impl Widget for ProgressBar {
                 // Currently bg_rect() gives a rect without borders, so we can use it.
                 // However in the future when bg_rect() gets expanded to include borders,
                 // we'll need to create a special sans-border rect for this fill.
-                let bg_rect = border_width.bg_rect(border_box, corner_radius);
+                let bg_rect = border_width.bg_rect(border_box, &corner_radius);
 
-                fill(scene, &bg_rect, &gradient);
+                painter.fill(bg_rect, &gradient).draw();
             }
         }
 
-        paint_border(scene, border_box, border_color, border_width, corner_radius);
+        paint_border(
+            painter,
+            border_box,
+            &border_color,
+            &border_width,
+            &corner_radius,
+        );
     }
 
     fn accessibility_role(&self) -> Role {
@@ -257,6 +271,7 @@ impl Widget for ProgressBar {
 mod tests {
     use super::*;
     use crate::core::{NewWidget, PropertySet};
+    use crate::layout::AsUnit;
     use crate::palette;
     use crate::properties::{BorderColor, CornerRadius};
     use crate::testing::{TestHarness, assert_render_snapshot};
@@ -266,34 +281,31 @@ mod tests {
     fn indeterminate_progressbar() {
         let widget = NewWidget::new(ProgressBar::new(None));
 
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_indeterminate");
     }
 
     #[test]
     fn _5_percent_styled_progressbar() {
-        let widget = ProgressBar::new(Some(0.05)).with_props((
-            CornerRadius::all(50.),
-            BorderWidth::all(10.),
+        let widget = ProgressBar::new(Some(0.05)).prepare().with_props((
+            CornerRadius::all(50.px()),
+            BorderWidth::all(10.px()),
             BorderColor::new(palette::css::PINK),
         ));
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_5_percent_styled");
     }
 
     #[test]
     fn _95_percent_styled_progressbar() {
-        let widget = ProgressBar::new(Some(0.95)).with_props((
-            CornerRadius::all(50.),
-            BorderWidth::all(10.),
+        let widget = ProgressBar::new(Some(0.95)).prepare().with_props((
+            CornerRadius::all(50.px()),
+            BorderWidth::all(10.px()),
             BorderColor::new(palette::css::PINK),
         ));
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_95_percent_styled");
     }
@@ -301,8 +313,7 @@ mod tests {
     #[test]
     fn _0_percent_progressbar() {
         let widget = NewWidget::new(ProgressBar::new(Some(0.)));
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_0_percent");
     }
@@ -310,8 +321,7 @@ mod tests {
     #[test]
     fn _25_percent_progressbar() {
         let widget = NewWidget::new(ProgressBar::new(Some(0.25)));
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_25_percent");
     }
@@ -319,8 +329,7 @@ mod tests {
     #[test]
     fn _50_percent_progressbar() {
         let widget = NewWidget::new(ProgressBar::new(Some(0.5)));
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_50_percent");
     }
@@ -328,8 +337,7 @@ mod tests {
     #[test]
     fn _75_percent_progressbar() {
         let widget = NewWidget::new(ProgressBar::new(Some(0.75)));
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_75_percent");
     }
@@ -337,8 +345,7 @@ mod tests {
     #[test]
     fn _100_percent_progressbar() {
         let widget = NewWidget::new(ProgressBar::new(Some(1.)));
-        let window_size = Size::new(150.0, 60.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 60));
 
         assert_render_snapshot!(harness, "progress_bar_100_percent");
     }
@@ -347,10 +354,10 @@ mod tests {
     fn edit_progressbar() {
         let image_1 = {
             let bar = ProgressBar::new(Some(0.5))
+                .prepare()
                 .with_props(PropertySet::new().with(BarColor(palette::css::PURPLE)));
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), bar, Size::new(60.0, 20.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), bar, (60, 20));
 
             harness.render()
         };
@@ -358,8 +365,7 @@ mod tests {
         let image_2 = {
             let bar = NewWidget::new(ProgressBar::new(None));
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), bar, Size::new(60.0, 20.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), bar, (60, 20));
 
             harness.edit_root_widget(|mut bar| {
                 ProgressBar::set_progress(&mut bar, Some(0.5));

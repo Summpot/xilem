@@ -7,14 +7,14 @@ use std::f64::consts::PI;
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
-    AccessCtx, ChildrenIds, HasProperty, LayoutCtx, MeasureCtx, NoAction, PaintCtx, PropertiesMut,
-    PropertiesRef, RegisterCtx, Update, UpdateCtx, Widget, WidgetId,
+    AccessCtx, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx, PropertiesMut,
+    PropertiesRef, RegisterCtx, Update, UpdateCtx, UsesProperty, Widget, WidgetId,
 };
-use crate::kurbo::{Affine, Axis, Cap, Line, Point, Size, Stroke, Vec2};
-use crate::layout::LenReq;
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, Cap, Line, Point, Size, Stroke, Vec2};
+use crate::layout::{LenReq, Length};
 use crate::properties::ContentColor;
 use crate::theme;
 
@@ -46,7 +46,7 @@ impl Spinner {
     }
 }
 
-impl HasProperty<ContentColor> for Spinner {}
+impl UsesProperty<ContentColor> for Spinner {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Spinner {
@@ -87,17 +87,13 @@ impl Widget for Spinner {
         _props: &PropertiesRef<'_>,
         _axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+        cross_length: Option<Length>,
+    ) -> Length {
         match len_req {
             // For preferred length we try to keep a square aspect ratio,
             // and when the cross length is unknown we fall back to the theme's default.
             LenReq::MinContent | LenReq::MaxContent => {
-                cross_length.unwrap_or(theme::BASIC_WIDGET_HEIGHT.dp(scale))
+                cross_length.unwrap_or(theme::BASIC_WIDGET_HEIGHT)
             }
             LenReq::FitContent(space) => space,
         }
@@ -105,8 +101,14 @@ impl Widget for Spinner {
 
     fn layout(&mut self, _ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, _size: Size) {}
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        let color = props.get::<ContentColor>();
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let cache = ctx.property_cache();
+        let color = props.get::<ContentColor>(cache);
 
         let t = self.t;
         let size = ctx.content_box_size();
@@ -122,13 +124,13 @@ impl Widget for Spinner {
             let ambit_end = center + (20.0 * scale_factor * angle);
             let color = color.color.multiply_alpha(fade as f32);
 
-            scene.stroke(
-                &Stroke::new(3.0 * scale_factor).with_caps(Cap::Square),
-                Affine::IDENTITY,
-                color,
-                None,
-                &Line::new(ambit_start, ambit_end),
-            );
+            painter
+                .stroke(
+                    Line::new(ambit_start, ambit_end),
+                    &Stroke::new(3.0 * scale_factor).with_caps(Cap::Square),
+                    color,
+                )
+                .draw();
         }
     }
 
@@ -166,8 +168,7 @@ mod tests {
     fn simple_spinner() {
         let spinner = NewWidget::new(Spinner::new());
 
-        let window_size = Size::new(100.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), spinner, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), spinner, (100, 100));
         assert_render_snapshot!(harness, "spinner_init");
 
         harness.animate_ms(700);
@@ -181,18 +182,17 @@ mod tests {
     fn edit_spinner() {
         let image_1 = {
             let spinner = Spinner::new()
+                .prepare()
                 .with_props(PropertySet::one(ContentColor::new(palette::css::PURPLE)));
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), spinner, Size::new(30.0, 30.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), spinner, (30, 30));
             harness.render()
         };
 
         let image_2 = {
             let spinner = NewWidget::new(Spinner::new());
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), spinner, Size::new(30.0, 30.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), spinner, (30, 30));
 
             harness.edit_root_widget(|mut spinner| {
                 spinner.insert_prop(ContentColor::new(palette::css::PURPLE));

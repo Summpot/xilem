@@ -6,19 +6,19 @@ use std::mem::Discriminant;
 
 use accesskit::{Node, Role};
 use include_doc_path::include_doc_path;
-use parley::{FontContext, Layout, LayoutAccessibility, LayoutContext};
 use smallvec::SmallVec;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
-    AccessCtx, ArcStr, BrushIndex, ChildrenIds, HasProperty, LayoutCtx, MeasureCtx, NoAction,
-    PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty, StyleSet, Update,
-    UpdateCtx, Widget, WidgetId, WidgetMut, render_text,
+    AccessCtx, ArcStr, BrushIndex, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx,
+    PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty, StyleSet, Update, UpdateCtx,
+    UsesProperty, Widget, WidgetId, WidgetMut, render_text, set_accesskit_brush_properties,
 };
+use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Size};
-use crate::layout::LenReq;
-use crate::properties::{ContentColor, DisabledContentColor, LineBreaking};
+use crate::layout::{AsUnit, LenReq, Length};
+use crate::parley::{FontContext, Layout, LayoutAccessibility, LayoutContext};
+use crate::properties::{ContentColor, LineBreaking};
 use crate::theme::default_text_styles;
 use crate::util::debug_panic;
 use crate::{TextAlign, TextAlignOptions, theme};
@@ -29,7 +29,7 @@ use crate::{TextAlign, TextAlignOptions, theme};
 /// need support for displaying text, such as a button.
 ///
 /// You can customize the look of this label with the
-/// [`LineBreaking`], [`ContentColor`] and [`DisabledContentColor`] properties.
+/// [`LineBreaking`] and [`ContentColor`] properties.
 ///
 #[doc = concat!(
     "![Styled label](",
@@ -176,7 +176,7 @@ impl Label {
     /// Creates a new label with the given text.
     ///
     // This is written out fully to appease rust-analyzer; StyleProperty is imported but not recognised.
-    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](parley::StyleProperty::FontSize).
+    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn new(text: impl Into<ArcStr>) -> Self {
         let mut styles = StyleSet::new(theme::TEXT_SIZE_NORMAL);
         default_text_styles(&mut styles);
@@ -194,8 +194,8 @@ impl Label {
 
     /// Sets a style property for the new label.
     ///
-    /// Setting [`StyleProperty::Brush`](parley::StyleProperty::Brush) is not supported.
-    /// Use [`ContentColor`] and [`DisabledContentColor`] properties instead.
+    /// Setting [`StyleProperty::Brush`](crate::parley::StyleProperty::Brush) is not supported.
+    /// Use the [`ContentColor`] property instead.
     ///
     /// To set a style property on an active label, use [`insert_style`](Self::insert_style).
     pub fn with_style(mut self, property: impl Into<StyleProperty>) -> Self {
@@ -271,8 +271,8 @@ impl Label {
     // Note: These docs are lazy, but also have a decreased likelihood of going out of date.
     /// The runtime equivalent of [`with_style`](Self::with_style).
     ///
-    /// Setting [`StyleProperty::Brush`](parley::StyleProperty::Brush) is not supported.
-    /// Use [`ContentColor`] and [`DisabledContentColor`] properties instead.
+    /// Setting [`StyleProperty::Brush`](crate::parley::StyleProperty::Brush) is not supported.
+    /// Use the [`ContentColor`] property instead.
     pub fn insert_style(
         this: &mut WidgetMut<'_, Self>,
         property: impl Into<StyleProperty>,
@@ -289,7 +289,7 @@ impl Label {
     /// Styles which are removed return to Parley's default values.
     /// In most cases, these are the defaults for this widget.
     ///
-    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](parley::StyleProperty::FontSize).
+    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn retain_styles(this: &mut WidgetMut<'_, Self>, f: impl FnMut(&StyleProperty) -> bool) {
         this.widget.styles.retain(f);
 
@@ -306,7 +306,7 @@ impl Label {
     /// Styles which are removed return to Parley's default values.
     /// In most cases, these are the defaults for this widget.
     ///
-    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](parley::StyleProperty::FontSize).
+    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::parley::StyleProperty::FontSize).
     pub fn remove_style(
         this: &mut WidgetMut<'_, Self>,
         property: Discriminant<StyleProperty>,
@@ -462,9 +462,8 @@ impl Label {
     }
 }
 
-impl HasProperty<ContentColor> for Label {}
-impl HasProperty<DisabledContentColor> for Label {}
-impl HasProperty<LineBreaking> for Label {}
+impl UsesProperty<ContentColor> for Label {}
+impl UsesProperty<LineBreaking> for Label {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Label {
@@ -479,7 +478,6 @@ impl Widget for Label {
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
         LineBreaking::prop_changed(ctx, property_type);
         ContentColor::prop_changed(ctx, property_type);
-        DisabledContentColor::prop_changed(ctx, property_type);
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
@@ -489,7 +487,7 @@ impl Widget for Label {
                 ctx.request_layout();
             }
             Update::DisabledChanged(_) => {
-                ctx.request_paint_only();
+                ctx.request_render();
             }
             _ => {}
         }
@@ -501,13 +499,14 @@ impl Widget for Label {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         // Currently we only support the common horizontal-tb writing mode,
         // so we hardcode the assumption that inline axis is horizontal.
         let inline = Axis::Horizontal;
 
-        let line_break_mode = props.get::<LineBreaking>();
+        let cache = ctx.property_cache();
+        let line_break_mode = props.get::<LineBreaking>(cache);
 
         // Calculate the max advance for the inline axis, with None indicating unbounded.
         let max_advance = match line_break_mode {
@@ -518,18 +517,18 @@ impl Widget for Label {
                     // This is a common optimization also present on the web.
                     match len_req {
                         // Zero space will get us the length of longest unbreakable word
-                        LenReq::MinContent => Some(0.),
+                        LenReq::MinContent => Some(Length::ZERO),
                         // Unbounded space will get us the length of the unwrapped string
                         LenReq::MaxContent => None,
                         // Attempt to wrap according to the parent's request
                         LenReq::FitContent(space) => Some(space),
                     }
                 } else {
-                    // Block axis is dependant on the inline axis, so cross_length dominates.
+                    // Block axis is dependent on the inline axis, so cross_length dominates.
                     // If there is no explicit cross_length present, we fall back to inline defaults.
                     match len_req {
                         // Fallback is inline axis MinContent
-                        LenReq::MinContent => cross_length.or(Some(0.)),
+                        LenReq::MinContent => cross_length.or(Some(Length::ZERO)),
                         // Fallback is inline axis MaxContent, even for FitContent, because
                         // as we don't have the inline space bound we'll consider it unbounded.
                         LenReq::MaxContent | LenReq::FitContent(_) => cross_length,
@@ -539,7 +538,7 @@ impl Widget for Label {
             // If we're never wrapping, then there's no max advance.
             LineBreaking::Clip | LineBreaking::Overflow => None,
         }
-        .map(|v| v as f32);
+        .map(|v| v.get() as f32);
 
         let (font_ctx, layout_ctx) = ctx.text_contexts();
         let layout_idx = self.build_and_break(font_ctx, layout_ctx, max_advance);
@@ -551,7 +550,7 @@ impl Widget for Label {
             layout.layout.height() // Block length
         };
 
-        length as f64
+        length.px()
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size) {
@@ -559,7 +558,8 @@ impl Widget for Label {
         // so we hardcode the assumption that inline axis is horizontal.
         let inline = Axis::Horizontal;
 
-        let line_break_mode = props.get::<LineBreaking>();
+        let cache = ctx.property_cache();
+        let line_break_mode = props.get::<LineBreaking>(cache);
 
         let inline_space = size.get_coord(inline) as f32;
 
@@ -593,19 +593,19 @@ impl Widget for Label {
         }
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        let text_color = if ctx.is_disabled()
-            && let Some(dc) = props.get_defined::<DisabledContentColor>()
-        {
-            &dc.0
-        } else {
-            props.get::<ContentColor>()
-        };
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        let cache = ctx.property_cache();
+        let text_color = props.get::<ContentColor>(cache);
 
         let layout = &self.layouts[self.active_layout];
 
         render_text(
-            scene,
+            painter,
             Affine::IDENTITY,
             &layout.layout,
             &[text_color.color.into()],
@@ -620,10 +620,13 @@ impl Widget for Label {
     fn accessibility(
         &mut self,
         ctx: &mut AccessCtx<'_>,
-        _props: &PropertiesRef<'_>,
+        props: &PropertiesRef<'_>,
         node: &mut Node,
     ) {
         let text_origin_in_border_box_space = Point::ORIGIN + ctx.border_box_translation();
+
+        let cache = ctx.property_cache();
+        let text_color = props.get::<ContentColor>(cache);
 
         let layout = &self.layouts[self.active_layout];
 
@@ -635,6 +638,7 @@ impl Widget for Label {
             AccessCtx::next_node_id,
             text_origin_in_border_box_space.x,
             text_origin_in_border_box_space.y,
+            |node, style| set_accesskit_brush_properties(node, style, &[text_color.color.into()]),
         );
     }
 
@@ -654,12 +658,11 @@ impl Widget for Label {
 // --- MARK: TESTS
 #[cfg(test)]
 mod tests {
-    use parley::style::GenericFamily;
-    use parley::{FontFamily, StyleProperty};
-
     use super::*;
     use crate::core::{NewWidget, PropertySet};
     use crate::layout::{AsUnit, Dim};
+    use crate::parley::style::GenericFamily;
+    use crate::parley::{FontFamily, FontFamilyName, StyleProperty};
     use crate::properties::Dimensions;
     use crate::properties::Gap;
     use crate::properties::types::CrossAxisAlignment;
@@ -669,10 +672,9 @@ mod tests {
 
     #[test]
     fn simple_label() {
-        let label = Label::new("Hello").with_auto_id();
+        let label = Label::new("Hello").prepare();
 
-        let window_size = Size::new(100.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), label, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), label, (100, 40));
 
         assert_render_snapshot!(harness, "label_hello");
     }
@@ -680,17 +682,19 @@ mod tests {
     #[test]
     fn styled_label() {
         let label = Label::new("The quick brown fox jumps over the lazy dog")
-            .with_style(FontFamily::Generic(GenericFamily::Monospace))
+            .with_style(FontFamily::Single(FontFamilyName::Generic(
+                GenericFamily::Monospace,
+            )))
             .with_style(StyleProperty::FontSize(20.0))
             .with_text_alignment(TextAlign::Center)
+            .prepare()
             .with_props(
                 PropertySet::new()
                     .with(ContentColor::new(ACCENT_COLOR))
                     .with(LineBreaking::WordWrap),
             );
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), label, Size::new(200.0, 200.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), label, (200, 200));
 
         assert_render_snapshot!(harness, "label_styled_label");
     }
@@ -699,10 +703,10 @@ mod tests {
     fn underline_label() {
         let label = Label::new("Emphasis")
             .with_style(StyleProperty::Underline(true))
+            .prepare()
             .with_props(PropertySet::new().with(LineBreaking::WordWrap));
 
-        let window_size = Size::new(100.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), label, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), label, (100, 40));
 
         assert_render_snapshot!(harness, "label_underline_label");
     }
@@ -711,10 +715,10 @@ mod tests {
         let label = Label::new("Tpyo")
             .with_style(StyleProperty::Strikethrough(true))
             .with_style(StyleProperty::StrikethroughSize(Some(4.)))
+            .prepare()
             .with_props(PropertySet::new().with(LineBreaking::WordWrap));
 
-        let window_size = Size::new(100.0, 40.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), label, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), label, (100, 40));
 
         assert_render_snapshot!(harness, "label_strikethrough_label");
     }
@@ -727,6 +731,7 @@ mod tests {
             Label::new("Hello")
                 .with_style(StyleProperty::FontSize(20.0))
                 .with_text_alignment(text_alignment)
+                .prepare()
                 .with_props(Dimensions::width(Dim::Stretch))
         }
         let label1 = base_label(TextAlign::Start);
@@ -742,10 +747,9 @@ mod tests {
             .with(label4, CrossAxisAlignment::Center)
             .with(label5, CrossAxisAlignment::Center)
             .with(label6, CrossAxisAlignment::Center);
-        let flex = NewWidget::new_with_props(flex, Gap::ZERO);
+        let flex = NewWidget::new(flex).with_props(Gap::ZERO);
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), flex, Size::new(200.0, 200.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), flex, (200, 200));
 
         assert_render_snapshot!(harness, "label_label_alignment_flex");
     }
@@ -757,34 +761,36 @@ mod tests {
             .with_fixed(
                 SizedBox::new(
                     Label::new("The quick brown fox jumps over the lazy dog")
+                        .prepare()
                         .with_props(PropertySet::new().with(LineBreaking::WordWrap)),
                 )
                 .width(180.px())
-                .with_auto_id(),
+                .prepare(),
             )
             .with_fixed_spacer(20.px())
             .with_fixed(
                 SizedBox::new(
                     Label::new("The quick brown fox jumps over the lazy dog")
+                        .prepare()
                         .with_props(PropertySet::new().with(LineBreaking::Clip)),
                 )
                 .width(180.px())
-                .with_auto_id(),
+                .prepare(),
             )
             .with_fixed_spacer(20.px())
             .with_fixed(
                 SizedBox::new(
                     Label::new("The quick brown fox jumps over the lazy dog")
+                        .prepare()
                         .with_props(PropertySet::new().with(LineBreaking::Overflow)),
                 )
                 .width(180.px())
-                .with_auto_id(),
+                .prepare(),
             )
             .with_spacer(1.0)
-            .with_auto_id();
+            .prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(200.0, 200.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 200));
 
         assert_render_snapshot!(harness, "label_line_break_modes");
     }
@@ -793,17 +799,19 @@ mod tests {
     fn edit_label() {
         let image_1 = {
             let label = Label::new("The quick brown fox jumps over the lazy dog")
-                .with_style(FontFamily::Generic(GenericFamily::Monospace))
+                .with_style(FontFamily::Single(FontFamilyName::Generic(
+                    GenericFamily::Monospace,
+                )))
                 .with_style(StyleProperty::FontSize(20.0))
                 .with_text_alignment(TextAlign::Center)
+                .prepare()
                 .with_props(
                     PropertySet::new()
                         .with(ContentColor::new(ACCENT_COLOR))
                         .with(LineBreaking::WordWrap),
                 );
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), label, Size::new(50.0, 50.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), label, (50, 50));
 
             harness.render()
         };
@@ -811,16 +819,18 @@ mod tests {
         let image_2 = {
             let label = Label::new("Hello world")
                 .with_style(StyleProperty::FontSize(40.0))
-                .with_auto_id();
+                .prepare();
 
-            let mut harness =
-                TestHarness::create_with_size(test_property_set(), label, Size::new(50.0, 50.0));
+            let mut harness = TestHarness::create_with_size(test_property_set(), label, (50, 50));
 
             harness.edit_root_widget(|mut label| {
                 label.insert_prop(ContentColor::new(ACCENT_COLOR));
                 label.insert_prop(LineBreaking::WordWrap);
                 Label::set_text(&mut label, "The quick brown fox jumps over the lazy dog");
-                Label::insert_style(&mut label, FontFamily::Generic(GenericFamily::Monospace));
+                Label::insert_style(
+                    &mut label,
+                    FontFamily::Single(FontFamilyName::Generic(GenericFamily::Monospace)),
+                );
                 Label::insert_style(&mut label, StyleProperty::FontSize(20.0));
                 Label::set_text_alignment(&mut label, TextAlign::Center);
             });

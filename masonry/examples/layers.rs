@@ -12,15 +12,15 @@ use masonry::core::{
     NoAction, PaintCtx, PointerEvent, PointerUpdate, PropertiesMut, PropertiesRef, PropertySet,
     RegisterCtx, StyleProperty, Update, UpdateCtx, Widget, WidgetId, WidgetPod,
 };
+use masonry::imaging::Painter;
 use masonry::kurbo::{Axis, Point, Size, Vec2};
 use masonry::layers::Tooltip;
-use masonry::layout::{AsUnit, LayoutSize, LenReq, SizeDef};
+use masonry::layout::{AsUnit, LayoutSize, LenReq, Length, SizeDef};
 use masonry::parley::FontWeight;
+use masonry::peniko::Color;
 use masonry::properties::{Background, BorderColor, BorderWidth, ContentColor};
 use masonry::theme::default_property_set;
 use masonry::util::{Duration, Instant};
-use masonry::vello::Scene;
-use masonry::vello::peniko::Color;
 use masonry::widgets::{Flex, Label, Selector};
 use masonry_winit::app::{AppDriver, DriverCtx, NewWindow, WindowId};
 use masonry_winit::winit::window::Window;
@@ -117,8 +117,8 @@ impl Widget for OverlayBox {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -137,7 +137,13 @@ impl Widget for OverlayBox {
         ctx.place_child(&mut self.child, Point::ORIGIN);
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
@@ -167,31 +173,29 @@ fn main() {
         .with_style(StyleProperty::FontWeight(FontWeight::BOLD));
 
     let overlayer = || {
-        let tooltip = NewWidget::new_with_props(
-            Tooltip::new(NewWidget::new_with_props(
-                Label::new("Tooltip!!!"),
-                PropertySet::one(ContentColor::new(Color::BLACK)),
-            )),
-            PropertySet::from((
-                BorderWidth::all(1.),
-                BorderColor::new(Color::BLACK),
-                Background::Color(Color::WHITE),
-            )),
-        )
+        let tooltip = NewWidget::new(Tooltip::new(
+            NewWidget::new(Label::new("Tooltip!!!"))
+                .with_props(PropertySet::one(ContentColor::new(Color::BLACK))),
+        ))
+        .with_props(PropertySet::from((
+            BorderWidth::all(1.px()),
+            BorderColor::new(Color::BLACK),
+            Background::Color(Color::WHITE),
+        )))
         .erased();
         (tooltip, LayerType::Tooltip("Tooltip!!!".to_string()))
     };
 
-    let overlay_box = OverlayBox::new(label.with_auto_id(), Box::new(overlayer));
+    let overlay_box = OverlayBox::new(label.prepare(), Box::new(overlayer));
 
     let selector = Selector::new(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
 
     // Arrange the two widgets vertically, with some padding
     let main_widget = Flex::column()
         .with_spacer(1.)
-        .with_fixed(overlay_box.with_auto_id())
+        .with_fixed(overlay_box.prepare())
         .with_fixed_spacer(80.px())
-        .with_fixed(selector.with_auto_id())
+        .with_fixed(selector.prepare())
         .with_spacer(1.);
 
     let driver = Driver {};
@@ -199,7 +203,7 @@ fn main() {
     masonry_winit::app::run(
         vec![NewWindow::new(
             Window::default_attributes().with_title("Hello Layers!"),
-            main_widget.with_auto_id().erased(),
+            main_widget.prepare().erased(),
         )],
         driver,
         default_property_set(),

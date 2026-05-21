@@ -31,16 +31,19 @@ pub type StyleProperty = parley::StyleProperty<'static, BrushIndex>;
 /// A set of styles specialised for use within Masonry.
 pub type StyleSet = parley::StyleSet<BrushIndex>;
 
-use parley::{Layout, PositionedLayoutItem};
-use vello::Scene;
-use vello::kurbo::{Affine, Line, Stroke};
-use vello::peniko::{Brush, Fill};
+use accesskit::{TextDecoration, TextDecorationStyle};
+use kurbo::{Affine, Line, Stroke};
+use parley::{Layout, PositionedLayoutItem, Style};
+use peniko::{Brush, Fill};
+use smallvec::SmallVec;
 
-/// A function that renders laid out glyphs to a [`Scene`].
+use crate::imaging::{PaintSink, Painter, record::Glyph};
+
+/// A function that renders laid out glyphs through imaging's [`Painter`].
 ///
 /// The `BrushIndex` values of the runs are indices into `brushes`.
 pub fn render_text(
-    scene: &mut Scene,
+    painter: &mut Painter<'_, impl PaintSink + ?Sized>,
     transform: Affine,
     layout: &Layout<BrushIndex>,
     brushes: &[Brush],
@@ -77,13 +80,10 @@ pub fn render_text(
                     (glyph_run.offset() as f64, y as f64),
                     ((glyph_run.offset() + glyph_run.advance()) as f64, y as f64),
                 );
-                scene.stroke(
-                    &Stroke::new(width.into()),
-                    transform,
-                    underline_brush,
-                    None,
-                    &line,
-                );
+                painter
+                    .stroke(line, &Stroke::new(width.into()), underline_brush)
+                    .transform(transform)
+                    .draw();
             }
             let mut x = glyph_run.offset();
             let y = glyph_run.baseline();
@@ -96,27 +96,27 @@ pub fn render_text(
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let coords = run.normalized_coords();
             let brush = &brushes[style.brush.0];
-            scene
-                .draw_glyphs(font)
-                .brush(brush)
+            let glyphs: SmallVec<[Glyph; 16]> = glyph_run
+                .glyphs()
+                .map(|glyph| {
+                    let gx = x + glyph.x;
+                    let gy = y + glyph.y;
+                    x += glyph.advance;
+                    Glyph {
+                        id: glyph.id,
+                        x: gx,
+                        y: gy,
+                    }
+                })
+                .collect();
+            painter
+                .glyphs(font, brush)
                 .hint(hint)
                 .transform(transform)
                 .glyph_transform(glyph_xform)
                 .font_size(font_size)
                 .normalized_coords(coords)
-                .draw(
-                    Fill::NonZero,
-                    glyph_run.glyphs().map(|glyph| {
-                        let gx = x + glyph.x;
-                        let gy = y - glyph.y;
-                        x += glyph.advance;
-                        vello::Glyph {
-                            id: glyph.id,
-                            x: gx,
-                            y: gy,
-                        }
-                    }),
-                );
+                .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
 
             if let Some(strikethrough) = &style.strikethrough {
                 let strikethrough_brush = &brushes[strikethrough.brush.0];
@@ -139,14 +139,54 @@ pub fn render_text(
                     (glyph_run.offset() as f64, y as f64),
                     ((glyph_run.offset() + glyph_run.advance()) as f64, y as f64),
                 );
-                scene.stroke(
-                    &Stroke::new(width.into()),
-                    transform,
-                    strikethrough_brush,
-                    None,
-                    &line,
-                );
+                painter
+                    .stroke(line, &Stroke::new(width.into()), strikethrough_brush)
+                    .transform(transform)
+                    .draw();
             }
         }
+    }
+}
+
+fn to_accesskit_color(brush: &Brush) -> Option<accesskit::Color> {
+    if let Brush::Solid(color) = brush {
+        let rgba = color.to_rgba8();
+        Some(accesskit::Color {
+            red: rgba.r,
+            green: rgba.g,
+            blue: rgba.b,
+            alpha: rgba.a,
+        })
+    } else {
+        None
+    }
+}
+
+/// Sets AccessKit text properties from the brush(es) for the given style.
+///
+/// The `BrushIndex` values of the runs are indices into `brushes`.
+pub fn set_accesskit_brush_properties(
+    node: &mut accesskit::Node,
+    style: &Style<BrushIndex>,
+    brushes: &[Brush],
+) {
+    if let Some(color) = to_accesskit_color(&brushes[style.brush.0]) {
+        node.set_foreground_color(color);
+    }
+    if let Some(deco) = &style.underline
+        && let Some(color) = to_accesskit_color(&brushes[deco.brush.0])
+    {
+        node.set_underline(TextDecoration {
+            style: TextDecorationStyle::Solid,
+            color,
+        });
+    }
+    if let Some(deco) = &style.strikethrough
+        && let Some(color) = to_accesskit_color(&brushes[deco.brush.0])
+    {
+        node.set_strikethrough(TextDecoration {
+            style: TextDecorationStyle::Solid,
+            color,
+        });
     }
 }

@@ -13,12 +13,12 @@ use std::time::Duration;
 use masonry::core::ArcStr;
 use masonry::layout::{AsUnit, Dim, UnitPoint};
 use masonry::properties::{LineBreaking, Padding};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use winit::dpi::LogicalSize;
 use winit::error::EventLoopError;
 use xilem::core::fork;
 use xilem::core::one_of::{OneOf, OneOf3};
 use xilem::palette::css::{BLACK, WHITE};
+use xilem::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use xilem::style::Style as _;
 use xilem::view::{
     ObjectFit, ZStackExt, flex_col, image, label, prose, sized_box, spinner, virtual_scroll, zstack,
@@ -96,15 +96,15 @@ impl VirtualCats {
                             .line_break_mode(LineBreaking::Clip)
                             .text_alignment(TextAlign::End),
                     )
-                    .padding(4.)
-                    .corner_radius(4.)
+                    .padding(4.px())
+                    .corner_radius(4.px())
                     .background_color(BLACK.multiply_alpha(0.5)),
                 )
                 .padding(Padding {
-                    left: 0.,
-                    right: 42.,
-                    top: 30.,
-                    bottom: 0.,
+                    left: 0.px(),
+                    right: 42.px(),
+                    top: 30.px(),
+                    bottom: 0.px(),
                 });
                 let imgview = zstack((
                     image(img.clone()).fit(ObjectFit::FitWidth),
@@ -125,8 +125,8 @@ impl VirtualCats {
                 let view = flex_col((errorstring, emojicat))
                     .cross_axis_alignment(xilem::view::CrossAxisAlignment::Start)
                     .background_color(WHITE)
-                    .padding(16.0)
-                    .corner_radius(8.0);
+                    .padding(16.px())
+                    .corner_radius(8.px());
                 OneOf::C(view)
             }
         };
@@ -141,7 +141,7 @@ impl VirtualCats {
             0..i64::try_from(self.statuses.len()).unwrap(),
             Self::virtual_item,
         ))
-        .padding(Padding::horizontal(10.0))
+        .padding(Padding::horizontal(10.px()))
     }
 }
 

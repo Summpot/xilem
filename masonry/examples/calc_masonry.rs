@@ -14,17 +14,15 @@
 use std::str::FromStr;
 
 use masonry::core::{
-    CollectionWidget, ErasedAction, NewWidget, Property, PropertySet, StyleProperty, Widget,
-    WidgetId,
+    CollectionWidget, DefaultProperties, ErasedAction, NewWidget, Property, PropertySet,
+    PropertyStack, Selector, StyleProperty, Widget, WidgetId,
 };
 use masonry::dpi::LogicalSize;
 use masonry::layout::AsUnit;
 use masonry::peniko::Color;
 use masonry::peniko::color::AlphaColor;
 use masonry::properties::types::CrossAxisAlignment;
-use masonry::properties::{
-    ActiveBackground, Background, BorderColor, BorderWidth, Gap, HoveredBorderColor, Padding,
-};
+use masonry::properties::{Background, BorderColor, BorderWidth, Gap, Padding};
 use masonry::theme::default_property_set;
 use masonry::widgets::{Button, ButtonPress, Flex, Grid, GridParams, Label};
 use masonry_winit::app::{AppDriver, DriverCtx, NewWindow, WindowId};
@@ -187,25 +185,15 @@ impl AppDriver for CalcState {
 // ---
 
 fn op_button_with_label(op: char, label: String) -> NewWidget<Button> {
-    const BLUE: Color = Color::from_rgb8(0x00, 0x8d, 0xdd);
-    const LIGHT_BLUE: Color = Color::from_rgb8(0x5c, 0xc4, 0xff);
-
     let button = Button::new(
         Label::new(label)
             .with_style(StyleProperty::FontSize(24.))
-            .with_auto_id(),
+            .prepare(),
     );
+    let mut button = NewWidget::new(button).with_props(CalcAction::Op(op));
+    button.classes.insert("op_button".to_string());
 
-    NewWidget::new_with_props(
-        button,
-        PropertySet::new()
-            .with(Background::Color(BLUE))
-            .with(ActiveBackground(Background::Color(LIGHT_BLUE)))
-            .with(HoveredBorderColor(BorderColor::new(Color::WHITE)))
-            .with(BorderColor::new(Color::TRANSPARENT))
-            .with(BorderWidth::all(2.0))
-            .with(CalcAction::Op(op)),
-    )
+    button
 }
 
 fn op_button(op: char) -> NewWidget<Button> {
@@ -213,25 +201,16 @@ fn op_button(op: char) -> NewWidget<Button> {
 }
 
 fn digit_button(digit: u8) -> NewWidget<Button> {
-    const GRAY: Color = Color::from_rgb8(0x3a, 0x3a, 0x3a);
-    const LIGHT_GRAY: Color = Color::from_rgb8(0x71, 0x71, 0x71);
-
     let button = Button::new(
         Label::new(format!("{digit}"))
             .with_style(StyleProperty::FontSize(24.))
-            .with_auto_id(),
+            .prepare(),
     );
 
-    NewWidget::new_with_props(
-        button,
-        PropertySet::new()
-            .with(Background::Color(GRAY))
-            .with(ActiveBackground(Background::Color(LIGHT_GRAY)))
-            .with(HoveredBorderColor(BorderColor::new(Color::WHITE)))
-            .with(BorderColor::new(Color::TRANSPARENT))
-            .with(BorderWidth::all(2.0))
-            .with(CalcAction::Digit(digit)),
-    )
+    let mut button = NewWidget::new(button).with_props(CalcAction::Digit(digit));
+    button.classes.insert("digit_button".to_string());
+
+    button
 }
 
 /// Build the widget tree
@@ -239,7 +218,7 @@ pub fn build_calc() -> NewWidget<impl Widget> {
     let display = Label::new(String::new()).with_style(StyleProperty::FontSize(32.));
     let display = Flex::column()
         .with_spacer(1.)
-        .with_fixed(display.with_auto_id())
+        .with_fixed(display.prepare())
         .with_spacer(1.)
         .cross_axis_alignment(CrossAxisAlignment::End);
 
@@ -248,7 +227,7 @@ pub fn build_calc() -> NewWidget<impl Widget> {
     }
 
     let root_widget = Grid::with_dimensions(4, 6)
-        .with(display.with_auto_id(), GridParams::new(0, 0, 4, 1))
+        .with(display.prepare(), GridParams::new(0, 0, 4, 1))
         .with(
             op_button_with_label('c', "CE".to_string()),
             button_params(0, 1),
@@ -273,13 +252,52 @@ pub fn build_calc() -> NewWidget<impl Widget> {
         .with(op_button('.'), button_params(2, 5))
         .with(op_button('='), button_params(3, 5));
 
-    NewWidget::new_with_props(
-        root_widget,
+    NewWidget::new(root_widget).with_props(
         PropertySet::new()
             .with(Background::Color(AlphaColor::from_str("#794869").unwrap()))
-            .with(Padding::all(2.0))
+            .with(Padding::all(2.px()))
             .with(Gap::new(1.px())),
     )
+}
+
+fn custom_property_set() -> DefaultProperties {
+    const BLUE: Color = Color::from_rgb8(0x00, 0x8d, 0xdd);
+    const LIGHT_BLUE: Color = Color::from_rgb8(0x5c, 0xc4, 0xff);
+    const GRAY: Color = Color::from_rgb8(0x3a, 0x3a, 0x3a);
+    const LIGHT_GRAY: Color = Color::from_rgb8(0x71, 0x71, 0x71);
+
+    let mut default_properties = default_property_set();
+
+    let mut stack = PropertyStack::new();
+    stack.push(
+        Selector::classes(&["op_button"]),
+        PropertySet::new()
+            .with(Background::Color(BLUE))
+            .with(BorderColor::new(Color::TRANSPARENT))
+            .with(BorderWidth::all(2.px())),
+    );
+    stack.push(
+        Selector::classes(&["op_button"]).with_active(true),
+        PropertySet::new().with(Background::Color(LIGHT_BLUE)),
+    );
+    stack.push(
+        Selector::classes(&["digit_button"]),
+        PropertySet::new()
+            .with(Background::Color(GRAY))
+            .with(BorderColor::new(Color::TRANSPARENT))
+            .with(BorderWidth::all(2.px())),
+    );
+    stack.push(
+        Selector::classes(&["digit_button"]).with_active(true),
+        PropertySet::new().with(Background::Color(LIGHT_GRAY)),
+    );
+    stack.push(
+        Selector::new().with_hovered(true),
+        PropertySet::new().with(BorderColor::new(Color::WHITE)),
+    );
+    default_properties.insert_stack::<Button>(stack);
+
+    default_properties
 }
 
 fn main() {
@@ -309,7 +327,7 @@ fn main() {
             build_calc().erased(),
         )],
         calc_state,
-        default_property_set(),
+        custom_property_set(),
     )
     .unwrap();
 }
@@ -324,7 +342,7 @@ mod tests {
     #[test]
     fn screenshot_test() {
         let mut harness = TestHarness::create_with(
-            default_property_set(),
+            custom_property_set(),
             build_calc(),
             TestHarnessParams::default(),
         );

@@ -1,6 +1,11 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
+#![expect(
+    missing_debug_implementations,
+    reason = "Widgets are not expected to implement Debug"
+)]
+
 use std::any::TypeId;
 
 use masonry_core::accesskit::{Node, Role};
@@ -9,9 +14,9 @@ use masonry_core::core::{
     NoAction, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update,
     UpdateCtx, Widget, WidgetMut, WidgetPod,
 };
+use masonry_core::imaging::Painter;
 use masonry_core::kurbo::{Axis, Point, Size};
-use masonry_core::layout::{LayoutSize, LenReq, SizeDef};
-use masonry_core::vello::Scene;
+use masonry_core::layout::{LayoutSize, LenReq, Length, SizeDef};
 
 /// A basic wrapper widget that can replace its child.
 pub struct WrapperWidget {
@@ -95,8 +100,8 @@ impl Widget for WrapperWidget {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -121,7 +126,13 @@ impl Widget for WrapperWidget {
 
     fn compose(&mut self, _ctx: &mut ComposeCtx<'_>) {}
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, _scene: &mut Scene) {}
+    fn paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        _painter: &mut Painter<'_>,
+    ) {
+    }
 
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer

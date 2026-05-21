@@ -4,7 +4,6 @@
 use accesskit::{ActionData, Node, Role};
 use include_doc_path::include_doc_path;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::keyboard::{Key, NamedKey};
 use crate::core::{
@@ -13,11 +12,11 @@ use crate::core::{
     PropertiesMut, PropertiesRef, QueryCtx, RegisterCtx, TextEvent, Update, UpdateCtx, Widget,
     WidgetId, WidgetMut, WidgetPod,
 };
-use crate::kurbo::{Axis, Line, Point, Size};
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, Join, Line, Point, Size, Stroke};
 use crate::layout::{AsUnit, LayoutSize, LenReq, Length};
 use crate::peniko::Color;
 use crate::theme;
-use crate::util::{fill_color, stroke};
 
 /// The split point, specifying how the available space is divided between the two children.
 ///
@@ -182,20 +181,20 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
 impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
     /// Returns the thickness of the splitter bar area.
     #[inline]
-    fn bar_area(&self, scale: f64) -> f64 {
-        self.bar_thickness.max(self.min_bar_area).dp(scale)
+    fn bar_area(&self) -> f64 {
+        self.bar_thickness.max(self.min_bar_area).get()
     }
 
     /// Returns the splitter bar center point.
-    fn bar_center(&self, length: f64, scale: f64) -> f64 {
-        let (edge1, edge2) = self.bar_edges(length, scale);
+    fn bar_center(&self, length: f64) -> f64 {
+        let (edge1, edge2) = self.bar_edges(length);
         (edge1 + edge2) * 0.5
     }
 
     /// Returns the location of the edges of the splitter bar,
     /// given the specified total length.
-    fn bar_edges(&self, length: f64, scale: f64) -> (f64, f64) {
-        let bar_thickness = self.bar_thickness.dp(scale);
+    fn bar_edges(&self, length: f64) -> (f64, f64) {
+        let bar_thickness = self.bar_thickness.get();
         let reduced_length = length - bar_thickness;
         let edge = reduced_length * self.split_point_effective;
         (edge, edge + bar_thickness)
@@ -203,10 +202,10 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
 
     /// Returns the location of the edges of the splitter bar area,
     /// given the specified total length.
-    fn bar_area_edges(&self, length: f64, scale: f64) -> (f64, f64) {
-        let (edge1, edge2) = self.bar_edges(length, scale);
+    fn bar_area_edges(&self, length: f64) -> (f64, f64) {
+        let (edge1, edge2) = self.bar_edges(length);
         let (space1, space2) = (edge1.max(0.), (length - edge2).max(0.));
-        let padding = self.bar_area(scale) - self.bar_thickness.dp(scale);
+        let padding = self.bar_area() - self.bar_thickness.get();
 
         // Half the padding to the first edge
         let pad1 = (0.5 * padding).min(space1);
@@ -219,16 +218,16 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
     }
 
     /// Returns `true` if the provided position is on the splitter bar area.
-    fn bar_area_hit_test(&self, length: f64, pos: f64, scale: f64) -> bool {
-        let (edge1, edge2) = self.bar_area_edges(length, scale);
+    fn bar_area_hit_test(&self, length: f64, pos: f64) -> bool {
+        let (edge1, edge2) = self.bar_area_edges(length);
         pos >= edge1 && pos <= edge2
     }
 
     /// Returns the minimum and maximum split coordinate of the provided length.
-    fn split_side_limits(&self, length: f64, scale: f64) -> (f64, f64) {
+    fn split_side_limits(&self, length: f64) -> (f64, f64) {
         let (min_child1, min_child2) = self.min_lengths;
-        let mut min_limit = min_child1.dp(scale);
-        let mut max_limit = (length - min_child2.dp(scale)).max(0.0);
+        let mut min_limit = min_child1.get();
+        let mut max_limit = (length - min_child2.get()).max(0.0);
 
         if min_limit > max_limit {
             min_limit = 0.5 * (min_limit + max_limit);
@@ -238,22 +237,22 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
         (min_limit, max_limit)
     }
 
-    fn calc_effective_split_point(&self, length: f64, scale: f64) -> f64 {
-        let (min_limit, max_limit) = self.split_side_limits(length, scale);
+    fn calc_effective_split_point(&self, length: f64) -> f64 {
+        let (min_limit, max_limit) = self.split_side_limits(length);
         if length <= f64::EPSILON {
             0.5
         } else {
             let child1_len = match self.split_point_chosen {
                 SplitPoint::Fraction(frac) => length * frac,
-                SplitPoint::FromStart(len) => len.dp(scale),
-                SplitPoint::FromEnd(len) => length - len.dp(scale),
+                SplitPoint::FromStart(len) => len.get(),
+                SplitPoint::FromEnd(len) => length - len.get(),
             };
             (child1_len / length).clamp(min_limit / length, max_limit / length)
         }
     }
 
-    fn set_chosen_from_child1_len(&mut self, length: f64, child1_len: f64, scale: f64) {
-        let (min_limit, max_limit) = self.split_side_limits(length, scale);
+    fn set_chosen_from_child1_len(&mut self, length: f64, child1_len: f64) {
+        let (min_limit, max_limit) = self.split_side_limits(length);
         let child1_len = child1_len.clamp(min_limit, max_limit);
 
         match self.split_point_chosen {
@@ -265,27 +264,20 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
                 });
             }
             SplitPoint::FromStart(_) => {
-                let logical = child1_len / scale;
-                self.split_point_chosen = SplitPoint::FromStart(Length::px(logical));
+                self.split_point_chosen = SplitPoint::FromStart(Length::px(child1_len));
             }
             SplitPoint::FromEnd(_) => {
                 let child2_len = (length - child1_len).max(0.0);
-                let logical = child2_len / scale;
-                self.split_point_chosen = SplitPoint::FromEnd(Length::px(logical));
+                self.split_point_chosen = SplitPoint::FromEnd(Length::px(child2_len));
             }
         }
     }
 
-    fn update_split_point_from_bar_center(
-        &mut self,
-        total_length: f64,
-        bar_center: f64,
-        scale: f64,
-    ) {
-        let bar_thickness = self.bar_thickness.dp(scale);
+    fn update_split_point_from_bar_center(&mut self, total_length: f64, bar_center: f64) {
+        let bar_thickness = self.bar_thickness.get();
         let split_space = (total_length - bar_thickness).max(0.0);
         let child1_len = bar_center - bar_thickness * 0.5;
-        self.set_chosen_from_child1_len(split_space, child1_len, scale);
+        self.set_chosen_from_child1_len(split_space, child1_len);
     }
 
     /// Returns the color of the splitter bar.
@@ -300,48 +292,37 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
         }
     }
 
-    fn paint_focus_bar(&mut self, ctx: &mut PaintCtx<'_>, scene: &mut Scene, scale: f64) {
+    fn paint_focus_bar(&mut self, ctx: &mut PaintCtx<'_>, scene: &mut Painter<'_>) {
         let length = ctx.content_box_size().get_coord(self.split_axis);
-        let (edge1, edge2) = self.bar_edges(length, scale);
+        let (edge1, edge2) = self.bar_edges(length);
 
         let mut rect = ctx.border_box();
         rect.set_coords(self.split_axis, edge1, edge2);
-        let rect = rect.inset(2.0 * scale);
+        let rect = rect.inset(2.0);
 
         let focus_color = theme::FOCUS_COLOR.with_alpha(if ctx.is_active() { 1.0 } else { 0.5 });
+        let focus_stroke = Stroke::new(1.0).with_join(Join::Miter);
 
-        stroke(scene, &rect, focus_color, 1.0 * scale);
+        scene.stroke(rect, &focus_stroke, focus_color).draw();
     }
 
-    fn paint_solid_bar(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        scene: &mut Scene,
-        scale: f64,
-        color: Color,
-    ) {
+    fn paint_solid_bar(&mut self, ctx: &mut PaintCtx<'_>, scene: &mut Painter<'_>, color: Color) {
         let length = ctx.content_box_size().get_coord(self.split_axis);
-        let (edge1, edge2) = self.bar_edges(length, scale);
+        let (edge1, edge2) = self.bar_edges(length);
 
         let mut rect = ctx.border_box();
         rect.set_coords(self.split_axis, edge1, edge2);
 
-        fill_color(scene, &rect, color);
+        scene.fill(rect, color).draw();
     }
 
-    fn paint_stroked_bar(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        scene: &mut Scene,
-        scale: f64,
-        color: Color,
-    ) {
+    fn paint_stroked_bar(&mut self, ctx: &mut PaintCtx<'_>, scene: &mut Painter<'_>, color: Color) {
         let length = ctx.content_box_size().get_coord(self.split_axis);
         // Set the line width to a third of the splitter bar thickness,
         // because we'll paint two equal lines at the edges.
-        let line_width = self.bar_thickness.dp(scale) / 3.0;
+        let line_width = self.bar_thickness.get() / 3.0;
         let line_midpoint = line_width / 2.0;
-        let (edge1, edge2) = self.bar_edges(length, scale);
+        let (edge1, edge2) = self.bar_edges(length);
 
         let edge1_line_pos = edge1 + line_midpoint;
         let edge2_line_pos = edge2 - line_midpoint;
@@ -357,8 +338,9 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
 
         let (line1, line2) = (Line::new(line1_p1, line1_p2), Line::new(line2_p1, line2_p2));
 
-        stroke(scene, &line1, color, line_width);
-        stroke(scene, &line2, color, line_width);
+        let style = Stroke::new(line_width);
+        scene.stroke(line1, &style, color).draw();
+        scene.stroke(line2, &style, color).draw();
     }
 }
 
@@ -474,10 +456,6 @@ where
         _props: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
         if self.draggable {
             match event {
                 PointerEvent::Down(PointerButtonEvent { state, .. }) => {
@@ -485,25 +463,23 @@ where
                         .local_position(state.position)
                         .get_coord(self.split_axis);
                     let length = ctx.content_box_size().get_coord(self.split_axis);
-                    if self.bar_area_hit_test(length, pos, scale) {
+                    if self.bar_area_hit_test(length, pos) {
                         ctx.set_handled();
                         ctx.capture_pointer();
                         ctx.request_focus();
                         // Save the delta between the click position and the bar center.
-                        self.click_offset = pos - self.bar_center(length, scale);
+                        self.click_offset = pos - self.bar_center(length);
                     }
                 }
-                PointerEvent::Move(PointerUpdate { current, .. }) => {
-                    if ctx.is_active() {
-                        let pos = ctx
-                            .local_position(current.position)
-                            .get_coord(self.split_axis);
-                        let length = ctx.content_box_size().get_coord(self.split_axis);
-                        // If widget has pointer capture, assume always it's hovered
-                        let effective_center = pos - self.click_offset;
-                        self.update_split_point_from_bar_center(length, effective_center, scale);
-                        ctx.request_layout();
-                    }
+                PointerEvent::Move(PointerUpdate { current, .. }) if ctx.is_active() => {
+                    let pos = ctx
+                        .local_position(current.position)
+                        .get_coord(self.split_axis);
+                    let length = ctx.content_box_size().get_coord(self.split_axis);
+                    // If widget has pointer capture, assume always it's hovered
+                    let effective_center = pos - self.click_offset;
+                    self.update_split_point_from_bar_center(length, effective_center);
+                    ctx.request_layout();
                 }
                 PointerEvent::Up(..) | PointerEvent::Cancel(..) => {
                     self.click_offset = 0.0;
@@ -530,12 +506,8 @@ where
             return;
         }
 
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
         let length = ctx.content_box_size().get_coord(self.split_axis);
-        let bar_thickness = self.bar_thickness.dp(scale);
+        let bar_thickness = self.bar_thickness.get();
         let split_space = (length - bar_thickness).max(0.0);
         if split_space <= f64::EPSILON {
             return;
@@ -564,15 +536,15 @@ where
                 child1_len += delta;
             }
             Key::Named(NamedKey::Home) => {
-                child1_len = self.split_side_limits(split_space, scale).0;
+                child1_len = self.split_side_limits(split_space).0;
             }
             Key::Named(NamedKey::End) => {
-                child1_len = self.split_side_limits(split_space, scale).1;
+                child1_len = self.split_side_limits(split_space).1;
             }
             _ => return,
         }
 
-        self.set_chosen_from_child1_len(split_space, child1_len, scale);
+        self.set_chosen_from_child1_len(split_space, child1_len);
         ctx.request_layout();
     }
 
@@ -586,12 +558,8 @@ where
             return;
         }
 
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
         let length = ctx.content_box_size().get_coord(self.split_axis);
-        let bar_thickness = self.bar_thickness.dp(scale);
+        let bar_thickness = self.bar_thickness.get();
         let split_space = (length - bar_thickness).max(0.0);
         if split_space <= f64::EPSILON {
             return;
@@ -615,7 +583,7 @@ where
             _ => return,
         }
 
-        self.set_chosen_from_child1_len(split_space, child1_len, scale);
+        self.set_chosen_from_child1_len(split_space, child1_len);
         ctx.request_layout();
     }
 
@@ -642,19 +610,13 @@ where
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let bar_thickness = self.bar_thickness.dp(scale);
-
+        cross_length: Option<Length>,
+    ) -> Length {
         if let LenReq::FitContent(space) = len_req {
             // We always want to use up all offered space
             if axis == self.split_axis {
                 // Don't go below the bar thickness, which we always want to paint.
-                return space.max(bar_thickness);
+                return space.max(self.bar_thickness);
             }
             return space;
         }
@@ -666,10 +628,13 @@ where
             .map(|cross_length| {
                 // We need to split the cross length if it's our split axis
                 if cross == self.split_axis {
-                    let cross_space = (cross_length - bar_thickness).max(0.);
-                    let split_point = self.calc_effective_split_point(cross_space, scale);
-                    let child1_cross_space = cross_space * split_point;
-                    (child1_cross_space, cross_space - child1_cross_space)
+                    let cross_space = cross_length.saturating_sub(self.bar_thickness);
+                    let split_point = self.calc_effective_split_point(cross_space.get());
+                    let child1_cross_space = (cross_space.get() * split_point).px();
+                    (
+                        child1_cross_space,
+                        cross_space.saturating_sub(child1_cross_space),
+                    )
                 } else {
                     (cross_length, cross_length)
                 }
@@ -694,23 +659,21 @@ where
         );
 
         if axis == self.split_axis {
-            child1_length + child2_length + bar_thickness
+            child1_length
+                .saturating_add(child2_length)
+                .saturating_add(self.bar_thickness)
         } else {
             child1_length.max(child2_length)
         }
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let bar_thickness = self.bar_thickness.dp(scale);
+        let bar_thickness = self.bar_thickness.get();
         let split_space = (size.get_coord(self.split_axis) - bar_thickness).max(0.);
         let cross_space = size.get_coord(self.split_axis.cross());
 
         // Update our effective split point to respect our size
-        self.split_point_effective = self.calc_effective_split_point(split_space, scale);
+        self.split_point_effective = self.calc_effective_split_point(split_space);
 
         let child1_split_space = (split_space * self.split_point_effective).max(0.);
         let child2_split_space = (split_space - child1_split_space).max(0.);
@@ -730,21 +693,22 @@ where
         ctx.place_child(&mut self.child2, child2_origin);
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         // TODO - Paint differently if the bar is draggable and hovered.
         let bar_color = self.bar_color(ctx);
         if self.solid {
-            self.paint_solid_bar(ctx, scene, scale, bar_color);
+            self.paint_solid_bar(ctx, painter, bar_color);
         } else {
-            self.paint_stroked_bar(ctx, scene, scale, bar_color);
+            self.paint_stroked_bar(ctx, painter, bar_color);
         }
 
         if ctx.is_focus_target() && self.draggable && !ctx.is_disabled() {
-            self.paint_focus_bar(ctx, scene, scale);
+            self.paint_focus_bar(ctx, painter);
         }
         // TODO: Child painting should probably be clipped, in such a way that
         //       one child won't overflow across the split bar onto the other child.
@@ -752,13 +716,9 @@ where
     }
 
     fn get_cursor(&self, ctx: &QueryCtx<'_>, pos: Point) -> CursorIcon {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
         let length = ctx.content_box_size().get_coord(self.split_axis);
         let local_pos = ctx.to_local(pos).get_coord(self.split_axis);
-        let is_bar_area_hovered = self.bar_area_hit_test(length, local_pos, scale);
+        let is_bar_area_hovered = self.bar_area_hit_test(length, local_pos);
 
         if self.draggable && (ctx.is_active() || is_bar_area_hovered) {
             match self.split_axis {
@@ -780,14 +740,10 @@ where
         _props: &PropertiesRef<'_>,
         node: &mut Node,
     ) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
         let length = ctx.content_box_size().get_coord(self.split_axis);
-        let bar_thickness = self.bar_thickness.dp(scale);
+        let bar_thickness = self.bar_thickness.get();
         let split_space = (length - bar_thickness).max(0.0);
-        let (min_limit, max_limit) = self.split_side_limits(split_space, scale);
+        let (min_limit, max_limit) = self.split_side_limits(split_space);
         let child1_len = split_space * self.split_point_effective;
 
         node.set_orientation(match self.split_axis {
@@ -820,7 +776,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{PointerButton, TextEvent, WindowEvent};
+    use crate::core::{TextEvent, WindowEvent};
     use crate::dpi::PhysicalSize;
     use crate::properties::Padding;
     use crate::testing::{TestHarness, assert_render_snapshot};
@@ -831,12 +787,11 @@ mod tests {
     fn columns() {
         #[rustfmt::skip]
         let widget = Split::new(
-            Label::new("Hello").with_auto_id(),
-            Label::new("World").with_auto_id(),
-        ).split_axis(Axis::Horizontal).draggable(false).with_auto_id();
+            Label::new("Hello").prepare(),
+            Label::new("World").prepare(),
+        ).split_axis(Axis::Horizontal).draggable(false).prepare();
 
-        let window_size = Size::new(150.0, 150.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 150));
 
         assert_render_snapshot!(harness, "split_columns");
     }
@@ -845,12 +800,11 @@ mod tests {
     fn rows() {
         #[rustfmt::skip]
         let widget = Split::new(
-            Label::new("Hello").with_auto_id(),
-            Label::new("World").with_auto_id(),
-        ).split_axis(Axis::Vertical).draggable(false).with_auto_id();
+            Label::new("Hello").prepare(),
+            Label::new("World").prepare(),
+        ).split_axis(Axis::Vertical).draggable(false).prepare();
 
-        let window_size = Size::new(150.0, 150.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 150));
 
         assert_render_snapshot!(harness, "split_rows");
     }
@@ -858,32 +812,26 @@ mod tests {
     #[test]
     fn edit_splitter() {
         let image_1 = {
-            let widget = Split::new(
-                Label::new("Hello").with_auto_id(),
-                Label::new("World").with_auto_id(),
-            )
-            .split_fraction(0.3)
-            .min_lengths(40.px(), 10.px())
-            .bar_thickness(12.px())
-            .draggable(true)
-            .solid_bar(true)
-            .with_auto_id();
+            let widget = Split::new(Label::new("Hello").prepare(), Label::new("World").prepare())
+                .split_fraction(0.3)
+                .min_lengths(40.px(), 10.px())
+                .bar_thickness(12.px())
+                .draggable(true)
+                .solid_bar(true)
+                .prepare();
 
             let mut harness =
-                TestHarness::create_with_size(test_property_set(), widget, Size::new(100.0, 100.0));
+                TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
             harness.render()
         };
 
         let image_2 = {
-            let widget = Split::new(
-                Label::new("Hello").with_auto_id(),
-                Label::new("World").with_auto_id(),
-            )
-            .with_auto_id();
+            let widget =
+                Split::new(Label::new("Hello").prepare(), Label::new("World").prepare()).prepare();
 
             let mut harness =
-                TestHarness::create_with_size(test_property_set(), widget, Size::new(100.0, 100.0));
+                TestHarness::create_with_size(test_property_set(), widget, (100, 100));
 
             harness.edit_root_widget(|mut splitter| {
                 Split::set_split_point(&mut splitter, SplitPoint::Fraction(0.3));
@@ -902,14 +850,10 @@ mod tests {
 
     #[test]
     fn drag_moves_split_point() {
-        let widget = Split::new(
-            Label::new("Hello").with_auto_id(),
-            Label::new("World").with_auto_id(),
-        )
-        .with_auto_id();
+        let widget =
+            Split::new(Label::new("Hello").prepare(), Label::new("World").prepare()).prepare();
 
-        let window_size = Size::new(150.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 100));
 
         let child1_initial_width = {
             let root = harness.root_widget();
@@ -919,9 +863,9 @@ mod tests {
         // Initial bar center with default settings:
         // split_space = 150 - 6 = 144, child1 = 72, bar center = 72 + 3 = 75.
         harness.mouse_move(Point::new(75.0, 10.0));
-        harness.mouse_button_press(PointerButton::Primary);
+        harness.mouse_button_press(None);
         harness.mouse_move(Point::new(105.0, 10.0));
-        harness.mouse_button_release(PointerButton::Primary);
+        harness.mouse_button_release(None);
 
         let (child1_width, child2_width) = {
             let root = harness.root_widget();
@@ -939,14 +883,10 @@ mod tests {
 
     #[test]
     fn keyboard_moves_split_point() {
-        let widget = Split::new(
-            Label::new("Hello").with_auto_id(),
-            Label::new("World").with_auto_id(),
-        )
-        .with_auto_id();
+        let widget =
+            Split::new(Label::new("Hello").prepare(), Label::new("World").prepare()).prepare();
 
-        let window_size = Size::new(150.0, 100.0);
-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, window_size);
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 100));
 
         let root_id = harness.root_id();
         harness.focus_on(Some(root_id));
@@ -968,15 +908,11 @@ mod tests {
 
     #[test]
     fn from_start_keeps_pixel_size_on_resize() {
-        let widget = Split::new(
-            Label::new("Hello").with_auto_id(),
-            Label::new("World").with_auto_id(),
-        )
-        .split_point(SplitPoint::FromStart(50.px()))
-        .with_auto_id();
+        let widget = Split::new(Label::new("Hello").prepare(), Label::new("World").prepare())
+            .split_point(SplitPoint::FromStart(50.px()))
+            .prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(200.0, 100.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 100));
 
         let child1_width = {
             let root = harness.root_widget();
@@ -994,15 +930,11 @@ mod tests {
 
     #[test]
     fn from_end_keeps_pixel_size_on_resize() {
-        let widget = Split::new(
-            Label::new("Hello").with_auto_id(),
-            Label::new("World").with_auto_id(),
-        )
-        .split_point(SplitPoint::FromEnd(50.px()))
-        .with_auto_id();
+        let widget = Split::new(Label::new("Hello").prepare(), Label::new("World").prepare())
+            .split_point(SplitPoint::FromEnd(50.px()))
+            .prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(200.0, 100.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 100));
 
         let child2_width = {
             let root = harness.root_widget();
@@ -1021,13 +953,12 @@ mod tests {
     #[test]
     fn fraction_clamps_when_set() {
         let widget = Split::new(
-            Label::new("Hello").with_props(Padding::all(0.)),
-            Label::new("World").with_props(Padding::all(0.)),
+            Label::new("Hello").prepare().with_props(Padding::ZERO),
+            Label::new("World").prepare().with_props(Padding::ZERO),
         )
-        .with_auto_id();
+        .prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), widget, Size::new(150.0, 100.0));
+        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (150, 100));
 
         harness.edit_root_widget(|mut split| {
             Split::set_split_point(&mut split, SplitPoint::Fraction(2.0));

@@ -8,20 +8,20 @@ use include_doc_path::include_doc_path;
 use masonry_core::debug_panic;
 use smallvec::SmallVec;
 use tracing::{Span, trace_span};
-use vello::Scene;
 
 use crate::core::{
-    AccessCtx, ArcStr, ChildrenIds, HasProperty, LayoutCtx, MeasureCtx, NewWidget, NoAction,
-    PaintCtx, PropertiesMut, PropertiesRef, Property, RegisterCtx, Update, UpdateCtx, Widget,
-    WidgetId, WidgetPod,
+    AccessCtx, ArcStr, ChildrenIds, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx,
+    PropertiesMut, PropertiesRef, Property, RegisterCtx, Update, UpdateCtx, UsesProperty, Widget,
+    WidgetId, WidgetMut, WidgetPod,
 };
-use crate::kurbo::{Affine, Axis, Cap, Join, Line, Size, Stroke};
+use crate::imaging::Painter;
+use crate::kurbo::{Axis, Cap, Join, Line, Size, Stroke};
 use crate::layout::LenReq;
 use crate::layout::{LayoutSize, Length, SizeDef, UnitPoint};
 use crate::properties::ContentColor;
 use crate::widgets::Label;
 
-// TODO: Do proper hairline layout/paint after scale rework has happened.
+// TODO: Use snap-aware hairline layout/paint once Masonry has presentation snapping helpers.
 
 /// A line to divide your content.
 ///
@@ -59,7 +59,7 @@ pub struct Divider {
 /// Describes the strategy how to display a dashed divider.
 ///
 /// It has no effect on a solid line divider.
-#[derive(Default, Copy, Clone, Debug)]
+#[derive(Default, Copy, Clone, Debug, PartialEq)]
 pub enum DashFit {
     /// Clip the end edge.
     ///
@@ -119,7 +119,7 @@ pub enum DashFit {
 }
 
 /// Describes the strategy where to place the divider's content.
-#[derive(Default, Copy, Clone, Debug)]
+#[derive(Default, Copy, Clone, Debug, PartialEq)]
 pub enum Placement {
     /// Place the content at the start.
     ///
@@ -284,7 +284,7 @@ impl Divider {
     ///
     /// [`content`]: Self::content
     pub fn label(self, text: impl Into<ArcStr>) -> Self {
-        self.content(Label::new(text).with_auto_id())
+        self.content(Label::new(text).prepare())
     }
 
     /// Returns `self` with the given `pad`.
@@ -296,6 +296,136 @@ impl Divider {
     pub fn pad(mut self, pad: Length) -> Self {
         self.pad = pad;
         self
+    }
+}
+
+// --- MARK: WIDGETMUT
+impl Divider {
+    /// Sets the direction `axis`.
+    pub fn set_direction(this: &mut WidgetMut<'_, Self>, axis: Axis) {
+        this.widget.axis = axis;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the line `thickness`.
+    pub fn set_thickness(this: &mut WidgetMut<'_, Self>, thickness: Length) {
+        this.widget.thickness = Some(thickness);
+        this.ctx.request_layout();
+    }
+
+    /// Sets the line thickness to hairline, i.e. 1 device pixel.
+    pub fn set_hairline(this: &mut WidgetMut<'_, Self>) {
+        this.widget.thickness = None;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the `dash_fit`.
+    pub fn set_dash_fit(this: &mut WidgetMut<'_, Self>, dash_fit: DashFit) {
+        this.widget.dash_fit = dash_fit;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the `dash_pattern`.
+    ///
+    /// See [`dash_pattern`] for more details.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dash_pattern` contains an uneven number of entries of 3 or more
+    /// and debug assertions are enabled.
+    ///
+    /// [`dash_pattern`]: Self::dash_pattern
+    pub fn set_dash_pattern(this: &mut WidgetMut<'_, Self>, dash_pattern: &[Length]) {
+        let mut dash_pattern = SmallVec::from_slice(dash_pattern);
+        // Paint code assumes an even number for simplicity of implementation.
+        let len = dash_pattern.len();
+        if len == 1 {
+            dash_pattern.push(dash_pattern[0]);
+        } else if len > 0 && !len.is_multiple_of(2) {
+            debug_panic!(
+                "The divider dash pattern must have an even number of lengths. Received {len}"
+            );
+            dash_pattern.pop();
+        }
+        this.widget.dash_pattern = dash_pattern;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the `cap` used both for start and end.
+    ///
+    /// Use [`set_start_cap`] or [`set_end_cap`] to set different edge caps.
+    ///
+    /// Defaults to [`Cap::Butt`].
+    ///
+    /// [`set_start_cap`]: Self::set_start_cap
+    /// [`set_end_cap`]: Self::set_end_cap
+    pub fn set_cap(this: &mut WidgetMut<'_, Self>, cap: Cap) {
+        this.widget.start_cap = cap;
+        this.widget.end_cap = cap;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the starting `cap`.
+    ///
+    /// Use [`set_cap`] to set the cap for both the start and the end.
+    ///
+    /// Defaults to [`Cap::Butt`].
+    ///
+    /// [`set_cap`]: Self::set_cap
+    pub fn set_start_cap(this: &mut WidgetMut<'_, Self>, cap: Cap) {
+        this.widget.start_cap = cap;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the ending `cap`.
+    ///
+    /// Use [`set_cap`] to set the cap for both the start and the end.
+    ///
+    /// Defaults to [`Cap::Butt`].
+    ///
+    /// [`set_cap`]: Self::set_cap
+    pub fn set_end_cap(this: &mut WidgetMut<'_, Self>, cap: Cap) {
+        this.widget.end_cap = cap;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the content `placement`.
+    ///
+    /// Defaults to [`Placement::Center`].
+    pub fn set_placement(this: &mut WidgetMut<'_, Self>, placement: Placement) {
+        this.widget.placement = placement;
+        this.ctx.request_layout();
+    }
+
+    /// Sets the `content`.
+    pub fn set_content(this: &mut WidgetMut<'_, Self>, content: NewWidget<impl Widget + ?Sized>) {
+        if let Some(old_content) = this.widget.content.replace(content.erased().to_pod()) {
+            this.ctx.remove_child(old_content);
+        }
+        this.ctx.children_changed();
+    }
+
+    /// Removes any existing content.
+    pub fn clear_content(this: &mut WidgetMut<'_, Self>) {
+        if let Some(old_content) = this.widget.content.take() {
+            this.ctx.remove_child(old_content);
+        }
+    }
+
+    /// Sets the `pad`.
+    ///
+    /// This `pad` determines the amount of space between the divider line and the content.
+    /// It does nothing when there is no content.
+    ///
+    /// The default value is 5px.
+    pub fn set_pad(this: &mut WidgetMut<'_, Self>, pad: Length) {
+        this.widget.pad = pad;
+        this.ctx.request_layout();
+    }
+
+    /// Returns a mutable reference to the content widget.
+    pub fn content_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> Option<WidgetMut<'t, dyn Widget>> {
+        this.widget.content.as_mut().map(|c| this.ctx.get_mut(c))
     }
 }
 
@@ -444,7 +574,7 @@ impl Divider {
     }
 }
 
-impl HasProperty<ContentColor> for Divider {}
+impl UsesProperty<ContentColor> for Divider {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Divider {
@@ -476,27 +606,23 @@ impl Widget for Divider {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        const DEFAULT_LENGTH: f64 = 100.;
-        let thickness = self.thickness.map(|t| t.dp(scale)).unwrap_or(1.);
+        cross_length: Option<Length>,
+    ) -> Length {
+        const DEFAULT_LENGTH: Length = Length::const_px(100.);
+        let thickness = self.thickness.unwrap_or(Length::const_px(1.));
 
         let content_length = if let Some(content) = &mut self.content {
             let auto_length = len_req.into();
             let context_size = LayoutSize::maybe(axis.cross(), cross_length);
             ctx.compute_length(content, auto_length, context_size, axis, cross_length)
         } else {
-            0.
+            Length::ZERO
         };
 
         if axis == self.axis {
             match len_req {
                 LenReq::MinContent => content_length,
-                LenReq::MaxContent => (DEFAULT_LENGTH * scale).max(content_length),
+                LenReq::MaxContent => DEFAULT_LENGTH.max(content_length),
                 LenReq::FitContent(space) => space.max(content_length),
             }
         } else {
@@ -505,10 +631,6 @@ impl Widget for Divider {
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
         // Clear any previously laid out lines.
         self.lines.clear();
 
@@ -533,10 +655,9 @@ impl Widget for Divider {
             });
         }
 
-        let thickness = self.thickness.map(|t| t.dp(scale)).unwrap_or(1.);
+        let thickness = self.thickness.map(|t| t.get()).unwrap_or(1.);
         let cross_pos = size.get_coord(self.axis.cross()) * 0.5;
-        let mut dashes: SmallVec<[f64; 4]> =
-            self.dash_pattern.iter().map(|l| l.dp(scale)).collect();
+        let mut dashes: SmallVec<[f64; 4]> = self.dash_pattern.iter().map(|l| l.get()).collect();
 
         if let Some(content) = &mut self.content {
             let content_size = ctx.compute_size(content, SizeDef::fit(size), size.into());
@@ -558,7 +679,7 @@ impl Widget for Divider {
 
             ctx.derive_baselines(content);
 
-            let pad = self.pad.dp(scale);
+            let pad = self.pad.get();
             let mut line_space = size.get_coord(self.axis)
                 - self.total_cap_overhang(thickness)
                 - content_size.get_coord(self.axis)
@@ -609,16 +730,18 @@ impl Widget for Divider {
         }
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        // TODO: Remove HACK: After scale factor rework this can be a simple 1.
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        // TODO: Replace with snap-aware paint helper once that exists.
         let one_dp = 1. / ctx.get_scale_factor();
 
-        let color = props.get::<ContentColor>();
-        let thickness = self.thickness.map(|t| t.dp(scale)).unwrap_or(one_dp);
+        let cache = ctx.property_cache();
+        let color = props.get::<ContentColor>(cache);
+        let thickness = self.thickness.map(|t| t.get()).unwrap_or(one_dp);
 
         for line in &self.lines {
             let style = Stroke {
@@ -629,7 +752,7 @@ impl Widget for Divider {
                 end_cap: self.end_cap,
                 ..Default::default()
             };
-            scene.stroke(&style, Affine::IDENTITY, color.color, None, &line.line);
+            painter.stroke(line.line, &style, color.color).draw();
         }
     }
 
@@ -680,27 +803,32 @@ mod tests {
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_fixed(
                 Flex::column()
-                    .with_fixed(Label::new("Above").with_auto_id())
-                    .with_fixed(Divider::horizontal().with_auto_id())
-                    .with_fixed(Label::new("Below").with_auto_id())
-                    .with_auto_id(),
+                    .with_fixed(Label::new("Above").prepare())
+                    .with_fixed(Divider::horizontal().prepare())
+                    .with_fixed(Label::new("Below").prepare())
+                    .prepare(),
             )
             .with_fixed(
                 Divider::vertical()
                     .thickness(5.px())
+                    .prepare()
                     .with_props(ContentColor::new(palette::css::DARK_SALMON)),
             )
             .with(
                 Flex::column()
-                    .with_fixed(Label::new("Another above").with_props(Dimensions::height(50.px())))
-                    .with_fixed(Divider::horizontal().with_auto_id())
-                    .with_auto_id(),
+                    .with_fixed(
+                        Label::new("Another above")
+                            .prepare()
+                            .with_props(Dimensions::height(50.px())),
+                    )
+                    .with_fixed(Divider::horizontal().prepare())
+                    .prepare(),
                 1.,
             )
+            .prepare()
             .with_props(Gap::ZERO);
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), root, Size::new(350., 80.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (350, 80));
 
         assert_render_snapshot!(harness, "divider_simple");
     }
@@ -715,12 +843,14 @@ mod tests {
                         .thickness(5.px())
                         .dash_pattern(&pattern(&[1, 10, 5, 20]))
                         .cap(Cap::Round)
+                        .prepare()
                         .with_props(ContentColor::new(palette::css::BLANCHED_ALMOND)),
                 )
                 .with_fixed(
                     Divider::horizontal()
                         .thickness(10.px())
                         .dash_pattern(&pattern(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
+                        .prepare()
                         .with_props(ContentColor::new(palette::css::LAVENDER)),
                 )
                 .with_fixed(
@@ -729,12 +859,14 @@ mod tests {
                         .dash_pattern(&pattern(&[5, 20]))
                         .start_cap(Cap::Round)
                         .end_cap(Cap::Square)
+                        .prepare()
                         .with_props(ContentColor::new(palette::css::ORANGE)),
                 )
                 .with_fixed(
                     Divider::horizontal()
                         .hairline()
                         .dash_pattern(&pattern(&[5, 1]))
+                        .prepare()
                         .with_props(ContentColor::new(palette::css::CRIMSON)),
                 )
                 .with_fixed(
@@ -742,6 +874,7 @@ mod tests {
                         .thickness(3.px())
                         .dash_pattern(&pattern(&[1, 6, 1, 12]))
                         .cap(Cap::Round)
+                        .prepare()
                         .with_props(ContentColor::new(palette::css::GOLD)),
                 )
                 .with_fixed(
@@ -751,14 +884,15 @@ mod tests {
                         .dash_fit(DashFit::Stretch)
                         .pad(20.px())
                         .label("O")
+                        .prepare()
                         .with_props(ContentColor::new(palette::css::HOT_PINK)),
                 )
-                .with_auto_id(),
+                .prepare(),
         )
-        .with_props(Padding::all(10.));
+        .prepare()
+        .with_props(Padding::all(10.px()));
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), root, Size::new(150., 120.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (150, 120));
 
         assert_render_snapshot!(harness, "divider_styled");
     }
@@ -770,6 +904,7 @@ mod tests {
                 .thickness(5.px())
                 .dash_pattern(&pattern(&[20, 10, 10, 20]))
                 .dash_fit(fit)
+                .prepare()
                 .with_props(ContentColor::new(palette::css::MAGENTA))
         };
 
@@ -782,12 +917,13 @@ mod tests {
                 .with_fixed(divider_fit(DashFit::Start))
                 .with_fixed(divider_fit(DashFit::Center))
                 .with_fixed(divider_fit(DashFit::End))
+                .prepare()
                 .with_props(Background::Color(palette::css::MIDNIGHT_BLUE)),
         )
-        .with_props(Padding::all(10.));
+        .prepare()
+        .with_props(Padding::all(10.px()));
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), root, Size::new(155., 90.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (155, 90));
 
         assert_render_snapshot!(harness, "divider_dash_fit");
     }
@@ -800,19 +936,19 @@ mod tests {
                 Divider::horizontal()
                     .label("Start")
                     .placement(Placement::Start)
-                    .with_auto_id(),
+                    .prepare(),
             )
             .with_fixed(
                 Divider::horizontal()
                     .label("Center")
                     .placement(Placement::Center)
-                    .with_auto_id(),
+                    .prepare(),
             )
             .with_fixed(
                 Divider::horizontal()
                     .label("End")
                     .placement(Placement::End)
-                    .with_auto_id(),
+                    .prepare(),
             )
             .with(
                 Flex::row()
@@ -822,40 +958,41 @@ mod tests {
                         Divider::vertical()
                             .label("Start")
                             .placement(Placement::Start)
-                            .with_auto_id(),
+                            .prepare(),
                     )
                     .with_fixed(
                         Divider::vertical()
                             .label("Center")
                             .placement(Placement::Center)
-                            .with_auto_id(),
+                            .prepare(),
                     )
                     .with_fixed(
                         Divider::vertical()
                             .label("End")
                             .placement(Placement::End)
-                            .with_auto_id(),
+                            .prepare(),
                     )
-                    .with_auto_id(),
+                    .prepare(),
                 1.,
             )
-            .with_auto_id();
+            .prepare();
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), root, Size::new(200., 200.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (200, 200));
 
         assert_render_snapshot!(harness, "divider_label");
     }
 
     #[test]
     fn content() {
-        let content = Spinner::new().with_props(Dimensions::fixed(30.px(), 30.px()));
+        let content = Spinner::new()
+            .prepare()
+            .with_props(Dimensions::fixed(30.px(), 30.px()));
         let root = Divider::horizontal()
             .content(content)
+            .prepare()
             .with_props(Dimensions::STRETCH);
 
-        let mut harness =
-            TestHarness::create_with_size(test_property_set(), root, Size::new(100., 60.));
+        let mut harness = TestHarness::create_with_size(test_property_set(), root, (100, 60));
 
         assert_render_snapshot!(harness, "divider_content");
     }

@@ -41,7 +41,9 @@ mod tests {
 
     #[test]
     fn simple_rect() {
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
 
@@ -88,6 +90,8 @@ Let's add a visual test:
     }
 ```
 
+![Screenshot of the blue rectangle][blue-rectangle-screenshot]
+
 The [`assert_render_snapshot!`] macro takes a snapshot name, renders the current state of the app, and stores the rendered image to `<CRATE-ROOT>/screenshots/<TEST-NAME>.png`.
 
 The rendered screenshot is compared against an existing file checked in your project, and panics if the reference file is meaningfully different (with some tolerance for small pixel-by-pixel differences) or if there isn't one.
@@ -113,7 +117,9 @@ Let's create another snapshot test to check that our widget correctly changes co
 
     #[test]
     fn hovered() {
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
         let rect_id = harness.root_id();
@@ -125,12 +131,12 @@ Let's create another snapshot test to check that our widget correctly changes co
     }
 ```
 
+![Screenshot of the hovered rectangle][hovered-rectangle-screenshot]
+
 To tell `TestHarness` which widget to hover, we need an id.
 We use `TestHarness::root_id()` method to the id of our `ColorRectangle`.
 
 Then we move the mouse to our rectangle widget, and we check the widget's new appearance.
-
-<!-- TODO - Include screenshot. -->
 
 
 ## Testing `WidgetMut`
@@ -147,7 +153,9 @@ Let's add a test that changes a rectangle's color, then checks its visual appear
     #[test]
     fn edit_rect() {
         const RED: Color = Color::from_rgb8(u8::MAX, 0, 0);
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
 
@@ -160,7 +168,7 @@ Let's add a test that changes a rectangle's color, then checks its visual appear
     }
 ```
 
-<!-- TODO - Include screenshot. -->
+![Screenshot of the red rectangle][red-rectangle-screenshot]
 
 
 ## Testing actions
@@ -174,12 +182,14 @@ The `TestHarness` is also capable of reading actions emitted by our widget with 
 
     #[test]
     fn on_click() {
-        let widget = ColorRectangle::new(BLUE).with_props(Dimensions::fixed(20.px(), 20.px()));
+        let widget = ColorRectangle::new(BLUE)
+            .prepare()
+            .with_props(Dimensions::MIN);
 
         let mut harness = TestHarness::create(default_property_set(), widget);
         let rect_id = harness.root_id();
 
-        harness.mouse_click_on(rect_id);
+        harness.mouse_click_on(rect_id, None);
         assert!(matches!(
             harness.pop_action::<ColorRectanglePress>(),
             Some((ColorRectanglePress, _))
@@ -193,6 +203,6 @@ In general, `TestHarness` tries to implement methods matching every kind of beha
 
 Read the [`TestHarness`] documentation for a full overview of its API.
 
-[`TestHarness`]: crate::testing::TestHarness
+[`TestHarness`]: https://docs.rs/masonry_testing/latest/masonry_testing/struct.TestHarness.html
 [`WidgetRef`]: crate::core::WidgetRef
-[`assert_render_snapshot!`]: crate::testing::assert_render_snapshot
+[`assert_render_snapshot!`]: https://docs.rs/masonry_testing/latest/masonry_testing/macro.assert_render_snapshot.html

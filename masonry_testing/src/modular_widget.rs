@@ -1,18 +1,23 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
+#![expect(
+    missing_debug_implementations,
+    reason = "Widgets are not expected to implement Debug"
+)]
+
 use std::any::TypeId;
 
 use masonry_core::accesskit::{Node, Role};
 use masonry_core::core::{
-    AccessCtx, AccessEvent, ChildrenIds, ComposeCtx, CursorIcon, EventCtx, Layer, LayoutCtx,
-    MeasureCtx, NewWidget, NoAction, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef,
-    PropertySet, QueryCtx, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetId, WidgetPod,
-    WidgetRef, find_widget_under_pointer, pre_paint,
+    AccessCtx, AccessEvent, ActionCtx, ChildrenIds, ComposeCtx, CursorIcon, ErasedAction, EventCtx,
+    Layer, LayoutCtx, MeasureCtx, NewWidget, NoAction, PaintCtx, PointerEvent, PropertiesMut,
+    PropertiesRef, QueryCtx, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetId,
+    WidgetPod, WidgetRef, find_widget_under_pointer, pre_paint,
 };
+use masonry_core::imaging::Painter;
 use masonry_core::kurbo::{Axis, Point, Size};
-use masonry_core::layout::{LayoutSize, LenReq, SizeDef};
-use masonry_core::vello::Scene;
+use masonry_core::layout::{LayoutSize, LenReq, Length, SizeDef};
 use tracing::trace_span;
 
 pub(crate) type PointerEventFn<S> =
@@ -22,15 +27,24 @@ pub(crate) type TextEventFn<S> =
 pub(crate) type AccessEventFn<S> =
     dyn FnMut(&mut S, &mut EventCtx<'_>, &mut PropertiesMut<'_>, &AccessEvent);
 pub(crate) type AnimFrameFn<S> = dyn FnMut(&mut S, &mut UpdateCtx<'_>, &mut PropertiesMut<'_>, u64);
+pub(crate) type ActionFn<S> =
+    dyn FnMut(&mut S, &mut ActionCtx<'_>, &mut PropertiesMut<'_>, &ErasedAction, WidgetId);
 pub(crate) type RegisterChildrenFn<S> = dyn FnMut(&mut S, &mut RegisterCtx<'_>);
 pub(crate) type UpdateFn<S> =
     dyn FnMut(&mut S, &mut UpdateCtx<'_>, &mut PropertiesMut<'_>, &Update);
 pub(crate) type PropertyChangeFn<S> = dyn FnMut(&mut S, &mut UpdateCtx<'_>, TypeId);
-pub(crate) type MeasureFn<S> =
-    dyn FnMut(&mut S, &mut MeasureCtx<'_>, &PropertiesRef<'_>, Axis, LenReq, Option<f64>) -> f64;
+pub(crate) type MeasureFn<S> = dyn FnMut(
+    &mut S,
+    &mut MeasureCtx<'_>,
+    &PropertiesRef<'_>,
+    Axis,
+    LenReq,
+    Option<Length>,
+) -> Length;
 pub(crate) type LayoutFn<S> = dyn FnMut(&mut S, &mut LayoutCtx<'_>, &PropertiesRef<'_>, Size);
 pub(crate) type ComposeFn<S> = dyn FnMut(&mut S, &mut ComposeCtx<'_>);
-pub(crate) type PaintFn<S> = dyn FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Scene);
+pub(crate) type PaintFn<S> =
+    dyn FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Painter<'_>);
 pub(crate) type RoleFn<S> = dyn Fn(&S) -> Role;
 pub(crate) type AccessFn<S> = dyn FnMut(&mut S, &mut AccessCtx<'_>, &PropertiesRef<'_>, &mut Node);
 pub(crate) type ChildrenFn<S> = dyn Fn(&S) -> ChildrenIds;
@@ -50,6 +64,7 @@ pub struct ModularWidget<S> {
     on_text_event: Option<Box<TextEventFn<S>>>,
     on_access_event: Option<Box<AccessEventFn<S>>>,
     on_anim_frame: Option<Box<AnimFrameFn<S>>>,
+    on_action: Option<Box<ActionFn<S>>>,
     register_children: Option<Box<RegisterChildrenFn<S>>>,
     update: Option<Box<UpdateFn<S>>>,
     property_change: Option<Box<PropertyChangeFn<S>>>,
@@ -81,6 +96,7 @@ impl<S> ModularWidget<S> {
             on_text_event: None,
             on_access_event: None,
             on_anim_frame: None,
+            on_action: None,
             register_children: None,
             update: None,
             property_change: None,
@@ -137,8 +153,11 @@ impl<W: Widget + ?Sized> ModularWidget<Vec<WidgetPod<W>>> {
                 let auto_length = len_req.into();
                 let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
-                let mut length: f64 = 0.;
+                let mut length = Length::ZERO;
                 for child in children {
+                    if ctx.child_is_stashed(child) {
+                        continue;
+                    }
                     let child_length =
                         ctx.compute_length(child, auto_length, context_size, axis, cross_length);
                     length = length.max(child_length);
@@ -151,6 +170,9 @@ impl<W: Widget + ?Sized> ModularWidget<Vec<WidgetPod<W>>> {
                 let context_size = size.into();
 
                 for child in children.iter_mut() {
+                    if ctx.child_is_stashed(child) {
+                        continue;
+                    }
                     let child_size = ctx.compute_size(child, auto_size, context_size);
                     ctx.run_layout(child, child_size);
                     ctx.place_child(child, Point::ZERO);
@@ -243,6 +265,16 @@ impl<S> ModularWidget<S> {
         self
     }
 
+    /// See [`Widget::on_action`]
+    pub fn action_fn(
+        mut self,
+        f: impl FnMut(&mut S, &mut ActionCtx<'_>, &mut PropertiesMut<'_>, &ErasedAction, WidgetId)
+        + 'static,
+    ) -> Self {
+        self.on_action = Some(Box::new(f));
+        self
+    }
+
     /// See [`Widget::register_children`]
     pub fn register_children_fn(
         mut self,
@@ -273,7 +305,14 @@ impl<S> ModularWidget<S> {
     /// See [`Widget::measure`]
     pub fn measure_fn(
         mut self,
-        f: impl FnMut(&mut S, &mut MeasureCtx<'_>, &PropertiesRef<'_>, Axis, LenReq, Option<f64>) -> f64
+        f: impl FnMut(
+            &mut S,
+            &mut MeasureCtx<'_>,
+            &PropertiesRef<'_>,
+            Axis,
+            LenReq,
+            Option<Length>,
+        ) -> Length
         + 'static,
     ) -> Self {
         self.measure = Some(Box::new(f));
@@ -298,7 +337,7 @@ impl<S> ModularWidget<S> {
     /// See [`Widget::pre_paint`]
     pub fn pre_paint_fn(
         mut self,
-        f: impl FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Scene) + 'static,
+        f: impl FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Painter<'_>) + 'static,
     ) -> Self {
         self.pre_paint = Some(Box::new(f));
         self
@@ -307,7 +346,7 @@ impl<S> ModularWidget<S> {
     /// See [`Widget::paint`]
     pub fn paint_fn(
         mut self,
-        f: impl FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Scene) + 'static,
+        f: impl FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Painter<'_>) + 'static,
     ) -> Self {
         self.paint = Some(Box::new(f));
         self
@@ -316,7 +355,7 @@ impl<S> ModularWidget<S> {
     /// See [`Widget::post_paint`]
     pub fn post_paint_fn(
         mut self,
-        f: impl FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Scene) + 'static,
+        f: impl FnMut(&mut S, &mut PaintCtx<'_>, &PropertiesRef<'_>, &mut Painter<'_>) + 'static,
     ) -> Self {
         self.post_paint = Some(Box::new(f));
         self
@@ -392,6 +431,18 @@ impl<S: 'static> Widget for ModularWidget<S> {
         }
     }
 
+    fn on_action(
+        &mut self,
+        ctx: &mut ActionCtx<'_>,
+        props: &mut PropertiesMut<'_>,
+        action: &ErasedAction,
+        source: WidgetId,
+    ) {
+        if let Some(f) = self.on_action.as_mut() {
+            f(&mut self.state, ctx, props, action, source);
+        }
+    }
+
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         if let Some(f) = self.register_children.as_mut() {
             f(&mut self.state, ctx);
@@ -416,8 +467,8 @@ impl<S: 'static> Widget for ModularWidget<S> {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let Self { state, measure, .. } = self;
         measure
             .as_mut()
@@ -456,23 +507,38 @@ impl<S: 'static> Widget for ModularWidget<S> {
         }
     }
 
-    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn pre_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         if let Some(f) = self.pre_paint.as_mut() {
-            f(&mut self.state, ctx, props, scene);
+            f(&mut self.state, ctx, props, painter);
         } else {
-            pre_paint(ctx, props, scene);
+            pre_paint(ctx, props, painter);
         }
     }
 
-    fn paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         if let Some(f) = self.paint.as_mut() {
-            f(&mut self.state, ctx, props, scene);
+            f(&mut self.state, ctx, props, painter);
         }
     }
 
-    fn post_paint(&mut self, ctx: &mut PaintCtx<'_>, props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn post_paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        props: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
         if let Some(f) = self.post_paint.as_mut() {
-            f(&mut self.state, ctx, props, scene);
+            f(&mut self.state, ctx, props, painter);
         }
     }
 
@@ -532,17 +598,10 @@ impl<S: 'static> Widget for ModularWidget<S> {
         "ModularWidget"
     }
 
-    fn with_auto_id(self) -> NewWidget<Self>
+    fn prepare(self) -> NewWidget<Self>
     where
         Self: Sized,
     {
         NewWidget::new(self)
-    }
-
-    fn with_props(self, props: impl Into<PropertySet>) -> NewWidget<Self>
-    where
-        Self: Sized,
-    {
-        NewWidget::new_with_props(self, props)
     }
 }
