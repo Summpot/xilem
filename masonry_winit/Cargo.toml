@@ -25,7 +25,7 @@ tracy = ["dep:tracing-tracy", "dep:wgpu-profiler", "wgpu-profiler/tracy", "mason
 
 [dependencies]
 masonry_core.workspace = true
-bevy_window = "0.18"
+bevy_window.workspace = true
 winit.workspace = true
 tracing = { workspace = true, features = ["default"] }
 tracing-tracy = { version = "0.11.4", optional = true }
