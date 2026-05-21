@@ -9,12 +9,14 @@ use masonry_core::core::DefaultProperties;
 use masonry_core::kurbo::Affine;
 use masonry_core::peniko::Color;
 use masonry_core::vello::{
-    wgpu, AaConfig, AaSupport, Error, RenderParams, Renderer, RendererOptions, Scene,
+    AaConfig, AaSupport, Error, RenderParams, Renderer, RendererOptions, Scene, wgpu,
 };
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::window::Window as WinitWindow;
 
-use crate::vello_util::{RenderContext, RenderSurface};
+use crate::vello_util::{
+    RenderContext, RenderSurface, SurfaceTextureStatus, get_current_surface_texture,
+};
 
 /// Metrics captured from an externally owned winit window.
 #[derive(Debug, Clone, Copy)]
@@ -178,29 +180,28 @@ impl ExternalWindowSurface {
             antialiasing_method: AaConfig::Area,
         };
 
-        let surface_texture = match self.surface.surface.get_current_texture() {
+        let surface_texture = match get_current_surface_texture(&self.surface.surface) {
             Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Outdated) => {
+            Err(SurfaceTextureStatus::Outdated) => {
                 let current_width = self.surface.config.width.max(1);
                 let current_height = self.surface.config.height.max(1);
-                self.render_cx.resize_surface(
-                    &mut self.surface,
-                    current_width,
-                    current_height,
-                );
+                self.render_cx
+                    .resize_surface(&mut self.surface, current_width, current_height);
 
-                match self.surface.surface.get_current_texture() {
+                match get_current_surface_texture(&self.surface.surface) {
                     Ok(texture) => texture,
                     Err(err) => {
                         tracing::error!(
-                            "Couldn't get swap chain texture after configuring. Cause: '{err}'"
+                            "Couldn't get swap chain texture after configuring. Cause: '{err:?}'"
                         );
                         return;
                     }
                 }
             }
             Err(err) => {
-                tracing::error!("Couldn't get swap chain texture, operation unrecoverable: {err}");
+                tracing::error!(
+                    "Couldn't get swap chain texture, operation unrecoverable: {err:?}"
+                );
                 return;
             }
         };
