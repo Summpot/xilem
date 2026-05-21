@@ -11,7 +11,8 @@ use masonry_core::vello::wgpu::{self, MemoryBudgetThresholds, MemoryHints};
 use wgpu::util::{TextureBlitter, TextureBlitterBuilder};
 use wgpu::{
     BlendComponent, BlendFactor, BlendState, CompositeAlphaMode, Device, Instance, PresentMode,
-    Surface, SurfaceConfiguration, Texture, TextureFormat, TextureUsages, TextureView,
+    Surface, SurfaceConfiguration, SurfaceTexture, Texture, TextureFormat, TextureUsages,
+    TextureView,
 };
 
 use crate::app_driver::WgpuLimits;
@@ -43,11 +44,12 @@ impl RenderContext {
         let backends = wgpu::Backends::from_env().unwrap_or_default();
         let flags = wgpu::InstanceFlags::from_build_config().with_env();
         let backend_options = wgpu::BackendOptions::from_env_or_default();
-        let instance = Instance::new(&wgpu::InstanceDescriptor {
+        let instance = Instance::new(wgpu::InstanceDescriptor {
             backends,
             flags,
-            backend_options,
             memory_budget_thresholds: MemoryBudgetThresholds::default(),
+            backend_options,
+            display: None,
         });
         Self {
             instance,
@@ -327,6 +329,29 @@ impl std::fmt::Debug for RenderSurface<'_> {
             .field("target_view", &self.target_view)
             .field("blitter", &"(Not Debug)")
             .finish()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum SurfaceTextureStatus {
+    Timeout,
+    Occluded,
+    Outdated,
+    Lost,
+    Validation,
+}
+
+pub(crate) fn get_current_surface_texture(
+    surface: &Surface<'_>,
+) -> Result<SurfaceTexture, SurfaceTextureStatus> {
+    match surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(texture)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Ok(texture),
+        wgpu::CurrentSurfaceTexture::Timeout => Err(SurfaceTextureStatus::Timeout),
+        wgpu::CurrentSurfaceTexture::Occluded => Err(SurfaceTextureStatus::Occluded),
+        wgpu::CurrentSurfaceTexture::Outdated => Err(SurfaceTextureStatus::Outdated),
+        wgpu::CurrentSurfaceTexture::Lost => Err(SurfaceTextureStatus::Lost),
+        wgpu::CurrentSurfaceTexture::Validation => Err(SurfaceTextureStatus::Validation),
     }
 }
 

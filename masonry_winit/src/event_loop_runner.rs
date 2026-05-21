@@ -34,7 +34,9 @@ use crate::app::{
     winit_ime_to_masonry,
 };
 use crate::app_driver::WindowId;
-use crate::vello_util::{RenderContext, RenderSurface};
+use crate::vello_util::{
+    RenderContext, RenderSurface, SurfaceTextureStatus, get_current_surface_texture,
+};
 
 /// The custom event type that we inject into winit's [`EventLoop`](winit::event_loop::EventLoop).
 ///
@@ -740,26 +742,28 @@ impl MasonryState<'_> {
             antialiasing_method: AaConfig::Area,
         };
 
-        let surface_texture = match surface.surface.get_current_texture() {
+        let surface_texture = match get_current_surface_texture(&surface.surface) {
             Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Outdated) => {
+            Err(SurfaceTextureStatus::Outdated) => {
                 let size = window.handle.inner_size();
                 render_cx.resize_surface(surface, size.width, size.height);
 
-                match surface.surface.get_current_texture() {
+                match get_current_surface_texture(&surface.surface) {
                     Ok(texture) => texture,
                     Err(err) => {
                         // This is a common occurrence on X11 and Xwayland with NVIDIA drivers
                         // when opening and resizing the window.
                         tracing::error!(
-                            "Couldn't get swap chain texture after configuring. Cause: '{err}'"
+                            "Couldn't get swap chain texture after configuring. Cause: '{err:?}'"
                         );
                         return;
                     }
                 }
             }
             Err(err) => {
-                tracing::error!("Couldn't get swap chain texture, operation unrecoverable: {err}");
+                tracing::error!(
+                    "Couldn't get swap chain texture, operation unrecoverable: {err:?}"
+                );
                 return;
             }
         };
